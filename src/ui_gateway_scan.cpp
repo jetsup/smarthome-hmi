@@ -71,12 +71,10 @@ static void sync_gateway_list() {
   if (actual == displayed_count) return;
 
   if (actual > displayed_count) {
-    // New gateways discovered — add cards for new ones
     for (size_t i = displayed_count; i < actual; i++) {
       add_gateway_card(i);
     }
   } else {
-    // Gateways removed (scan restart) — rebuild from scratch
     lv_obj_clean(gw_list_panel);
     no_gw_label = lv_label_create(gw_list_panel);
     lv_label_set_text(no_gw_label, "No gateways found.\nTap Scan to discover.");
@@ -99,7 +97,6 @@ static void sync_gateway_list() {
 }
 
 static void scan_timer_cb(lv_timer_t* t) {
-  // Guard against stale timer after screen transition
   if (t != scan_timer || gw_list_panel == nullptr) return;
 
   auto& disc = GatewayDiscovery::instance();
@@ -117,7 +114,6 @@ static void on_scan_clicked(lv_event_t* e) {
   auto& disc = GatewayDiscovery::instance();
   disc.startScan();
 
-  // Reset UI: clear panel, re-add placeholder
   if (gw_list_panel == nullptr) return;
   lv_obj_clean(gw_list_panel);
   no_gw_label = lv_label_create(gw_list_panel);
@@ -148,7 +144,6 @@ void cleanup_gateway_scan_screen() {
 void build_gateway_scan_screen(bool fromSettings) {
   g_from_settings = fromSettings;
 
-  // Save old screen for deletion AFTER new screen is loaded
   lv_obj_t* old_screen = nullptr;
   if (fromSettings) {
     old_screen = lv_screen_active();
@@ -158,7 +153,6 @@ void build_gateway_scan_screen(bool fromSettings) {
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x1E1E24), LV_PART_MAIN);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-  // Back button at top when opened from settings
   if (g_from_settings) {
     lv_obj_t* back_btn = lv_button_create(scr);
     lv_obj_set_size(back_btn, 36, 28);
@@ -173,7 +167,6 @@ void build_gateway_scan_screen(bool fromSettings) {
     lv_obj_add_event_cb(
         back_btn,
         [](lv_event_t*) {
-          // Clean up scan timer before navigating away
           if (scan_timer != nullptr) {
             lv_timer_del(scan_timer);
             scan_timer = nullptr;
@@ -187,19 +180,45 @@ void build_gateway_scan_screen(bool fromSettings) {
 
   lv_obj_t* title = lv_label_create(scr);
   lv_label_set_text(title, "Select Gateway");
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
   lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
+
+  lv_obj_t* div = lv_obj_create(scr);
+  lv_obj_set_size(div, 280, 1);
+  lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 38);
+  lv_obj_set_style_bg_color(div, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_border_width(div, 0, LV_PART_MAIN);
 
   lv_obj_t* instr = lv_label_create(scr);
   lv_label_set_text(instr, "Discovered gateways:");
   lv_obj_set_style_text_color(instr, lv_color_hex(0x8A8A8A), LV_PART_MAIN);
   lv_obj_set_style_text_font(instr, &lv_font_montserrat_10, LV_PART_MAIN);
-  lv_obj_align(instr, LV_ALIGN_TOP_LEFT, 15, 45);
+  lv_obj_align(instr, LV_ALIGN_TOP_LEFT, 15, 50);
 
-  scan_btn = lv_button_create(scr);
-  lv_obj_set_size(scan_btn, 80, 26);
-  lv_obj_align(scan_btn, LV_ALIGN_TOP_RIGHT, -15, 42);
+  lv_obj_t* scan_row = lv_obj_create(scr);
+  lv_obj_set_size(scan_row, LV_SIZE_CONTENT, 30);
+  lv_obj_align(scan_row, LV_ALIGN_TOP_RIGHT, -15, 46);
+  lv_obj_set_style_bg_opa(scan_row, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(scan_row, 0, LV_PART_MAIN);
+  lv_obj_set_flex_flow(scan_row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(scan_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(scan_row, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_gap(scan_row, 6, LV_PART_MAIN);
+
+  scan_spinner = lv_spinner_create(scan_row);
+  lv_obj_set_size(scan_spinner, 20, 20);
+  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x404040),
+                             LV_PART_MAIN);
+  lv_obj_set_style_arc_width(scan_spinner, 3, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x00A8E8),
+                             LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(scan_spinner, 3, LV_PART_INDICATOR);
+  lv_obj_add_flag(scan_spinner, LV_OBJ_FLAG_HIDDEN);
+
+  scan_btn = lv_button_create(scan_row);
+  lv_obj_set_size(scan_btn, 60, 26);
   lv_obj_set_style_bg_color(scan_btn, lv_color_hex(0x00A8E8), LV_PART_MAIN);
   lv_obj_set_style_radius(scan_btn, 4, LV_PART_MAIN);
   lv_obj_add_event_cb(scan_btn, on_scan_clicked, LV_EVENT_CLICKED, nullptr);
@@ -210,20 +229,9 @@ void build_gateway_scan_screen(bool fromSettings) {
   lv_obj_set_style_text_color(scan_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
   lv_obj_center(scan_lbl);
 
-  scan_spinner = lv_spinner_create(scr);
-  lv_obj_set_size(scan_spinner, 40, 40);
-  lv_obj_align(scan_spinner, LV_ALIGN_CENTER, 0, -20);
-  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x404040),
-                             LV_PART_MAIN);
-  lv_obj_set_style_arc_width(scan_spinner, 4, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x00A8E8),
-                             LV_PART_INDICATOR);
-  lv_obj_set_style_arc_width(scan_spinner, 4, LV_PART_INDICATOR);
-  lv_obj_add_flag(scan_spinner, LV_OBJ_FLAG_HIDDEN);
-
   gw_list_panel = lv_obj_create(scr);
   lv_obj_set_size(gw_list_panel, 290, 140);
-  lv_obj_align(gw_list_panel, LV_ALIGN_TOP_LEFT, 15, 75);
+  lv_obj_align(gw_list_panel, LV_ALIGN_TOP_LEFT, 15, 85);
   lv_obj_set_flex_flow(gw_list_panel, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(gw_list_panel, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(gw_list_panel, LV_SCROLLBAR_MODE_AUTO);
@@ -244,22 +252,18 @@ void build_gateway_scan_screen(bool fromSettings) {
 
   displayed_count = 0;
 
-  // Load new screen BEFORE deleting old one (LVGL needs a valid active screen)
   lv_screen_load(scr);
 
-  // Now safe to delete old screen
   if (old_screen != nullptr) {
     lv_obj_delete(old_screen);
   }
 
-  // Kill any previous scan timer before creating a new one
   if (scan_timer != nullptr) {
     lv_timer_del(scan_timer);
     scan_timer = nullptr;
   }
   scan_timer = lv_timer_create(scan_timer_cb, 500, nullptr);
 
-  // Start auto-scan
   auto& disc = GatewayDiscovery::instance();
   disc.startScan();
   lv_obj_add_state(scan_btn, LV_STATE_DISABLED);

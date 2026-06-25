@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 
 #include "network_manager.hpp"
+#include "preferences_manager.hpp"
 
 DataManager& DataManager::instance() {
   static DataManager inst;
@@ -89,10 +90,24 @@ bool DataManager::fetchNodes() {
     path = "/api/hmi/gateways/" + m_gatewayId + "/all-nodes";
     code = NetworkManager::instance().httpGet(path, resp);
     if (code != 200) {
-      m_error = true;
-      m_lastError = "HTTP " + String(code);
-      if (m_errorCb) m_errorCb();
-      return false;
+      // Try loading from cache before giving up
+      String cached = PreferencesManager::instance().getCachedNodes();
+      if (cached.isEmpty()) {
+        m_error = true;
+        m_lastError = "HTTP " + String(code);
+        if (m_errorCb) m_errorCb();
+        return false;
+      }
+      Serial.println("[DM] Hub offline, using cached nodes");
+      if (!parseNodesResponse(cached)) {
+        m_error = true;
+        m_lastError = "Cache parse failed";
+        if (m_errorCb) m_errorCb();
+        return false;
+      }
+      m_initialized = true;
+      if (m_nodesCb) m_nodesCb();
+      return true;
     }
   }
 
@@ -101,6 +116,8 @@ bool DataManager::fetchNodes() {
   m_initialized = true;
   if (m_nodesCb) m_nodesCb();
 
+  // Cache successful response for offline use
+  PreferencesManager::instance().cacheNodes(resp);
   return true;
 }
 

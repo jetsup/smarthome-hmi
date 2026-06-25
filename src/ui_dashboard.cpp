@@ -6,6 +6,7 @@
 
 #include "data_manager.hpp"
 #include "gateway_discovery.hpp"
+#include "network_manager.hpp"
 #include "ui_screens.hpp"
 
 extern WS2812FX ws2812fx;
@@ -18,6 +19,7 @@ static lv_obj_t* empty_spinner;
 static lv_obj_t* placeholder_lbl;
 static lv_timer_t* poll_timer = nullptr;
 static bool dashboard_active = false;
+static bool gateway_online = false;
 
 struct NodeCapability {
   String name;
@@ -46,6 +48,14 @@ static std::vector<lv_obj_t*> sidebar_buttons;
 static std::vector<CapWidget> cap_widgets;
 static size_t rendered_node =
     SIZE_MAX;  // which node's widgets are currently built
+
+static bool is_node_online(size_t node_idx) {
+  if (node_idx >= discovered_nodes.size()) return false;
+  // If gateway/hub is unreachable, all nodes are offline
+  if (!gateway_online) return false;
+  return GatewayDiscovery::instance().isNodeOnline(
+      discovered_nodes[node_idx].deviceIdNum);
+}
 
 static void render_node_sidebar();
 static void populate_capability_controls(size_t node_idx);
@@ -133,6 +143,11 @@ static void poll_data_cb(lv_timer_t* t) {
   if (!dashboard_active) return;
 
   auto& dm = DataManager::instance();
+
+  // Check gateway/hub connectivity
+  gateway_online =
+      NetworkManager::instance().isWiFiConnected() && !dm.hasError();
+
   if (!dm.isInitialized()) {
     dm.onNodesChanged(sync_nodes_from_data_manager);
     if (!dm.fetchNodes()) {
@@ -156,7 +171,11 @@ static void poll_data_cb(lv_timer_t* t) {
   sync_telemetry_devices();
 
   if (active_node_index < discovered_nodes.size()) {
-    dm.fetchNodeDetail(active_node_index);
+    bool detail_ok = dm.fetchNodeDetail(active_node_index);
+    // If detail fetch fails, mark gateway as offline
+    if (!detail_ok) {
+      gateway_online = false;
+    }
     const NodeInfo* apiNode = dm.getNode(active_node_index);
     if (apiNode) {
       auto& localNode = discovered_nodes[active_node_index];
@@ -171,7 +190,7 @@ static void poll_data_cb(lv_timer_t* t) {
     }
   }
 
-  // Update widget values in-place (no destroy/recreate)
+  // Update widget values and disabled state in-place
   update_capability_values(active_node_index);
   // Also refresh sidebar for online status changes
   render_node_sidebar();
@@ -179,6 +198,11 @@ static void poll_data_cb(lv_timer_t* t) {
 
 void build_main_dashboard_layout() {
   dashboard_active = true;
+
+  // Turn off boot LED animation — dashboard is ready
+  ws2812fx.setMode(FX_MODE_STATIC);
+  ws2812fx.setColor(0x000000);
+  ws2812fx.setBrightness(0);
 
   if (main_screen != nullptr) {
     lv_obj_delete(main_screen);
@@ -219,7 +243,6 @@ void build_main_dashboard_layout() {
       settings_btn,
       [](lv_event_t*) {
         dashboard_active = false;
-        // Nullify all UI pointers so callbacks don't access freed memory
         sidebar_panel = nullptr;
         nodes_main_panel = nullptr;
         empty_label = nullptr;
@@ -227,6 +250,7 @@ void build_main_dashboard_layout() {
         placeholder_lbl = nullptr;
         cap_widgets.clear();
         rendered_node = SIZE_MAX;
+        main_screen = nullptr;
         if (poll_timer != nullptr) {
           lv_timer_delete(poll_timer);
           poll_timer = nullptr;
@@ -311,7 +335,7 @@ static void render_node_sidebar() {
 
   for (size_t i = 0; i < discovered_nodes.size(); ++i) {
     auto& node = discovered_nodes[i];
-    bool online = GatewayDiscovery::instance().isNodeOnline(node.deviceIdNum);
+    bool online = is_node_online(i);
 
     lv_obj_t* btn = lv_button_create(sidebar_panel);
     lv_obj_set_width(btn, LV_PCT(100));
@@ -338,7 +362,7 @@ static void render_node_sidebar() {
     lv_obj_set_style_text_font(status_lbl, &lv_font_montserrat_10,
                                LV_PART_MAIN);
     lv_obj_set_style_text_color(
-        status_lbl, online ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF4444),
+        status_lbl, online ? lv_color_hex(0x00FF00) : lv_color_hex(0xF7D3CD),
         LV_PART_MAIN);
     lv_obj_align(status_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
 
@@ -369,6 +393,7 @@ static void populate_capability_controls(size_t node_idx) {
   lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
 
   DeviceNode& node = discovered_nodes[node_idx];
+  bool online = is_node_online(node_idx);
 
   lv_obj_t* node_card = lv_obj_create(nodes_main_panel);
   lv_obj_set_width(node_card, LV_PCT(100));
@@ -382,7 +407,8 @@ static void populate_capability_controls(size_t node_idx) {
   lv_obj_set_style_pad_row(node_card, 8, LV_PART_MAIN);
 
   lv_obj_t* node_title = lv_label_create(node_card);
-  lv_label_set_text(node_title, node.name.c_str());
+  String title_text = node.name + (online ? "" : " (Offline)");
+  lv_label_set_text(node_title, title_text.c_str());
   lv_obj_set_style_text_font(node_title, &lv_font_montserrat_12, LV_PART_MAIN);
   lv_obj_set_style_text_color(node_title, lv_color_hex(0x00A8E8), LV_PART_MAIN);
 
@@ -413,6 +439,7 @@ static void populate_capability_controls(size_t node_idx) {
       lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x00A8E8),
                                 LV_PART_INDICATOR | LV_STATE_CHECKED);
       if (cap.value > 0) lv_obj_add_state(ctrl, LV_STATE_CHECKED);
+      if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
       lv_obj_add_event_cb(ctrl, digital_out_toggle_cb, LV_EVENT_VALUE_CHANGED,
                           (void*)context_idx);
     } else if (cap.type == "analogOutput") {
@@ -422,6 +449,7 @@ static void populate_capability_controls(size_t node_idx) {
       lv_slider_set_value(ctrl, cap.value, LV_ANIM_OFF);
       lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x00A8E8),
                                 LV_PART_INDICATOR);
+      if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
       lv_obj_add_event_cb(ctrl, analog_out_slider_cb, LV_EVENT_VALUE_CHANGED,
                           (void*)context_idx);
     } else if (cap.type == "analogInput") {
@@ -458,6 +486,8 @@ static void update_capability_values(size_t node_idx) {
   }
 
   DeviceNode& node = discovered_nodes[node_idx];
+  bool online = is_node_online(node_idx);
+  // Update title with online status
   for (size_t i = 0; i < cap_widgets.size() && i < node.capabilities.size();
        i++) {
     auto& w = cap_widgets[i];
@@ -465,16 +495,29 @@ static void update_capability_values(size_t node_idx) {
     if (!w.control) continue;
 
     if (w.type == "digitalOutput") {
+      // Update checked state
       if (cap.value > 0 && !lv_obj_has_state(w.control, LV_STATE_CHECKED)) {
         lv_obj_add_state(w.control, LV_STATE_CHECKED);
       } else if (cap.value == 0 &&
                  lv_obj_has_state(w.control, LV_STATE_CHECKED)) {
         lv_obj_clear_state(w.control, LV_STATE_CHECKED);
       }
+      // Update disabled state
+      if (online && lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
+        lv_obj_clear_state(w.control, LV_STATE_DISABLED);
+      } else if (!online && !lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
+        lv_obj_add_state(w.control, LV_STATE_DISABLED);
+      }
     } else if (w.type == "analogOutput") {
       int cur = lv_slider_get_value(w.control);
       if (cur != cap.value) {
         lv_slider_set_value(w.control, cap.value, LV_ANIM_OFF);
+      }
+      // Update disabled state
+      if (online && lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
+        lv_obj_clear_state(w.control, LV_STATE_DISABLED);
+      } else if (!online && !lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
+        lv_obj_add_state(w.control, LV_STATE_DISABLED);
       }
     } else if (w.type == "analogInput") {
       int cur = lv_bar_get_value(w.control);
@@ -501,6 +544,8 @@ static void node_select_cb(lv_event_t* e) {
 
 static void send_cmd_with_hub_sync(size_t nodeIdx, size_t capIdx, int value) {
   if (nodeIdx >= discovered_nodes.size()) return;
+  // Don't send commands to offline nodes
+  if (!is_node_online(nodeIdx)) return;
   auto& node = discovered_nodes[nodeIdx];
   if (capIdx >= node.capabilities.size()) return;
   auto& cap = node.capabilities[capIdx];
@@ -519,11 +564,6 @@ static void digital_out_toggle_cb(lv_event_t* e) {
   bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
   size_t ci = (size_t)lv_event_get_user_data(e);
   send_cmd_with_hub_sync(active_node_index, ci, is_on ? 255 : 0);
-  if (is_on) {
-    ws2812fx.setColor(0x00A8E8);
-  } else {
-    ws2812fx.setColor(0x000000);
-  }
 }
 
 static void analog_out_slider_cb(lv_event_t* e) {
