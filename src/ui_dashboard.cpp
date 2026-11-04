@@ -1,3 +1,4 @@
+#include "theme.hpp"
 #include "ui_dashboard.hpp"
 
 #include <WS2812FX.h>
@@ -7,6 +8,7 @@
 #include "data_manager.hpp"
 #include "gateway_discovery.hpp"
 #include "network_manager.hpp"
+#include "preferences_manager.hpp"
 #include "ui_screens.hpp"
 
 extern WS2812FX ws2812fx;
@@ -122,7 +124,7 @@ static void refresh_ui() {
       lv_label_set_text(empty_label, ("Error: " + dm.lastError()).c_str());
     } else if (dm.isInitialized()) {
       lv_label_set_text(empty_label,
-                        "No nodes found.\nProvision nodes via web UI.");
+                        "No nodes on this display yet.\nAssign nodes to it in the app\nor on the website.");
     } else {
       lv_label_set_text(empty_label,
                         "No nodes discovered.\nScanning hardware...");
@@ -139,6 +141,15 @@ static void refresh_ui() {
   populate_capability_controls(active_node_index);
 }
 
+// Rebuild the dashboard with the new theme/accent (swap screens safely).
+static void rebuild_for_theme() {
+  lv_obj_t* old = main_screen;
+  main_screen = nullptr;  // build_main_dashboard_layout must not delete the live one
+  build_main_dashboard_layout();
+  lv_screen_load(main_screen);
+  if (old && lv_obj_is_valid(old)) lv_obj_delete(old);
+}
+
 static void poll_data_cb(lv_timer_t* t) {
   if (!dashboard_active) return;
 
@@ -153,6 +164,13 @@ static void poll_data_cb(lv_timer_t* t) {
     if (!dm.fetchNodes()) {
       Serial.printf("[DB] poll: fetchNodes FAILED: %s\n",
                     dm.lastError().c_str());
+      if (dm.lastError() == "HTTP 401") {
+        // Token rejected by the hub (revoked / secret changed): re-pair.
+        Serial.println("[DB] hub rejected token — clearing pairing, restarting");
+        PreferencesManager::instance().clearPairedGateway();
+        delay(200);
+        ESP.restart();
+      }
     }
     return;
   }
@@ -164,6 +182,13 @@ static void poll_data_cb(lv_timer_t* t) {
     last_full_fetch = now;
     dm.onNodesChanged(sync_nodes_from_data_manager);
     dm.fetchNodes();
+    return;
+  }
+
+  // Every poll (5 s): pick up a rename / appearance change made in the app.
+  dm.refreshGatewayName();
+  if (dm.takeLookChanged()) {
+    rebuild_for_theme();
     return;
   }
 
@@ -200,9 +225,7 @@ void build_main_dashboard_layout() {
   dashboard_active = true;
 
   // Turn off boot LED animation — dashboard is ready
-  ws2812fx.setMode(FX_MODE_STATIC);
-  ws2812fx.setColor(0x000000);
-  ws2812fx.setBrightness(0);
+  theme::applyHardware();  // backlight + status LED as chosen in the app
 
   if (main_screen != nullptr) {
     lv_obj_delete(main_screen);
@@ -210,7 +233,7 @@ void build_main_dashboard_layout() {
   }
 
   main_screen = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(main_screen, lv_color_hex(0x121214), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(main_screen, lv_color_hex(th_page()), LV_PART_MAIN);
 
   sidebar_panel = lv_obj_create(main_screen);
   lv_obj_set_size(sidebar_panel, 95, 200);
@@ -218,10 +241,10 @@ void build_main_dashboard_layout() {
   lv_obj_set_flex_flow(sidebar_panel, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(sidebar_panel, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(sidebar_panel, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_color(sidebar_panel, lv_color_hex(0x1E1E24),
+  lv_obj_set_style_bg_color(sidebar_panel, lv_color_hex(th_panel()),
                             LV_PART_MAIN);
   lv_obj_set_style_border_width(sidebar_panel, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(sidebar_panel, lv_color_hex(0x2D2D35),
+  lv_obj_set_style_border_color(sidebar_panel, lv_color_hex(th_surface()),
                                 LV_PART_MAIN);
   lv_obj_set_style_pad_all(sidebar_panel, 4, LV_PART_MAIN);
   lv_obj_set_style_pad_row(sidebar_panel, 6, LV_PART_MAIN);
@@ -229,15 +252,15 @@ void build_main_dashboard_layout() {
   lv_obj_t* settings_btn = lv_button_create(main_screen);
   lv_obj_set_size(settings_btn, 95, 36);
   lv_obj_align(settings_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  lv_obj_set_style_bg_color(settings_btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(settings_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_radius(settings_btn, 0, LV_PART_MAIN);
   lv_obj_set_style_border_width(settings_btn, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(settings_btn, lv_color_hex(0x2D2D35),
+  lv_obj_set_style_border_color(settings_btn, lv_color_hex(th_surface()),
                                 LV_PART_MAIN);
   lv_obj_t* gear_lbl = lv_label_create(settings_btn);
   lv_label_set_text(gear_lbl, LV_SYMBOL_SETTINGS " Settings");
   lv_obj_set_style_text_font(gear_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-  lv_obj_set_style_text_color(gear_lbl, lv_color_hex(0x8A8A8A), LV_PART_MAIN);
+  lv_obj_set_style_text_color(gear_lbl, lv_color_hex(th_muted()), LV_PART_MAIN);
   lv_obj_center(gear_lbl);
   lv_obj_add_event_cb(
       settings_btn,
@@ -265,7 +288,7 @@ void build_main_dashboard_layout() {
   lv_obj_set_flex_flow(nodes_main_panel, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(nodes_main_panel, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(nodes_main_panel, LV_SCROLLBAR_MODE_AUTO);
-  lv_obj_set_style_bg_color(nodes_main_panel, lv_color_hex(0x121214),
+  lv_obj_set_style_bg_color(nodes_main_panel, lv_color_hex(th_page()),
                             LV_PART_MAIN);
   lv_obj_set_style_border_width(nodes_main_panel, 0, LV_PART_MAIN);
   lv_obj_set_style_pad_all(nodes_main_panel, 6, LV_PART_MAIN);
@@ -273,7 +296,7 @@ void build_main_dashboard_layout() {
 
   empty_label = lv_label_create(main_screen);
   lv_label_set_text(empty_label, "No nodes discovered.\nScanning hardware...");
-  lv_obj_set_style_text_color(empty_label, lv_color_hex(0x8A8A8A),
+  lv_obj_set_style_text_color(empty_label, lv_color_hex(th_muted()),
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(empty_label, &lv_font_montserrat_10, LV_PART_MAIN);
   lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -283,9 +306,9 @@ void build_main_dashboard_layout() {
   empty_spinner = lv_spinner_create(main_screen);
   lv_obj_set_size(empty_spinner, 30, 30);
   lv_obj_align(empty_spinner, LV_ALIGN_CENTER, 10, 20);
-  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(0x00A8E8),
+  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_accent()),
                              LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(0x404040),
+  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_track()),
                              LV_PART_MAIN);
   lv_obj_set_style_arc_width(empty_spinner, 3, LV_PART_MAIN);
   lv_obj_set_style_arc_width(empty_spinner, 3, LV_PART_INDICATOR);
@@ -293,7 +316,7 @@ void build_main_dashboard_layout() {
 
   placeholder_lbl = lv_label_create(main_screen);
   lv_label_set_text(placeholder_lbl, "Select a node\nfrom the sidebar");
-  lv_obj_set_style_text_color(placeholder_lbl, lv_color_hex(0x656565),
+  lv_obj_set_style_text_color(placeholder_lbl, lv_color_hex(th_dim()),
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(placeholder_lbl, &lv_font_montserrat_12,
                              LV_PART_MAIN);
@@ -345,16 +368,21 @@ static void render_node_sidebar() {
 
     if (i == active_node_index) {
       lv_obj_add_state(btn, LV_STATE_CHECKED);
-      lv_obj_set_style_bg_color(btn, lv_color_hex(0x00A8E8), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(btn, lv_color_hex(th_accent()), LV_PART_MAIN);
     } else {
-      lv_obj_set_style_bg_color(btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(btn, lv_color_hex(th_surface()), LV_PART_MAIN);
     }
 
     lv_obj_t* name_lbl = lv_label_create(btn);
-    String display_name = node.name.substring(0, 10);
-    lv_label_set_text(name_lbl, display_name.c_str());
+    // Full name; if it is wider than the button it scrolls instead of being cut.
+    lv_label_set_text(name_lbl, node.name.c_str());
+    lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_width(name_lbl, LV_PCT(100));
+    lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(name_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_color(
+        name_lbl, lv_color_hex(i == active_node_index ? 0xFFFFFFu : th_text()),
+        LV_PART_MAIN);
     lv_obj_align(name_lbl, LV_ALIGN_TOP_MID, 0, 4);
 
     lv_obj_t* status_lbl = lv_label_create(btn);
@@ -399,9 +427,9 @@ static void populate_capability_controls(size_t node_idx) {
   lv_obj_set_width(node_card, LV_PCT(100));
   lv_obj_set_height(node_card, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(node_card, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_bg_color(node_card, lv_color_hex(0x1E1E24), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(node_card, lv_color_hex(th_panel()), LV_PART_MAIN);
   lv_obj_set_style_border_width(node_card, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(node_card, lv_color_hex(0x2D2D35),
+  lv_obj_set_style_border_color(node_card, lv_color_hex(th_surface()),
                                 LV_PART_MAIN);
   lv_obj_set_style_pad_all(node_card, 6, LV_PART_MAIN);
   lv_obj_set_style_pad_row(node_card, 8, LV_PART_MAIN);
@@ -409,8 +437,10 @@ static void populate_capability_controls(size_t node_idx) {
   lv_obj_t* node_title = lv_label_create(node_card);
   String title_text = node.name + (online ? "" : " (Offline)");
   lv_label_set_text(node_title, title_text.c_str());
+  lv_label_set_long_mode(node_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(node_title, LV_PCT(100));
   lv_obj_set_style_text_font(node_title, &lv_font_montserrat_12, LV_PART_MAIN);
-  lv_obj_set_style_text_color(node_title, lv_color_hex(0x00A8E8), LV_PART_MAIN);
+  lv_obj_set_style_text_color(node_title, lv_color_hex(th_accent()), LV_PART_MAIN);
 
   for (size_t ci = 0; ci < node.capabilities.size(); ci++) {
     const auto& cap = node.capabilities[ci];
@@ -427,8 +457,10 @@ static void populate_capability_controls(size_t node_idx) {
 
     lv_obj_t* cap_lbl = lv_label_create(row);
     lv_label_set_text(cap_lbl, cap.name.c_str());
+    lv_label_set_long_mode(cap_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_width(cap_lbl, LV_PCT(42));  // leave room for the control on the right
     lv_obj_set_style_text_font(cap_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(cap_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_color(cap_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
 
     uintptr_t context_idx = (uintptr_t)ci;
     lv_obj_t* ctrl = nullptr;
@@ -436,7 +468,7 @@ static void populate_capability_controls(size_t node_idx) {
     if (cap.type == "digitalOutput") {
       ctrl = lv_switch_create(row);
       lv_obj_set_size(ctrl, 34, 18);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x00A8E8),
+      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_accent()),
                                 LV_PART_INDICATOR | LV_STATE_CHECKED);
       if (cap.value > 0) lv_obj_add_state(ctrl, LV_STATE_CHECKED);
       if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
@@ -447,9 +479,11 @@ static void populate_capability_controls(size_t node_idx) {
       lv_obj_set_size(ctrl, 80, 8);
       lv_slider_set_range(ctrl, 0, 255);
       lv_slider_set_value(ctrl, cap.value, LV_ANIM_OFF);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x00A8E8),
+      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_accent()),
                                 LV_PART_INDICATOR);
       if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
+      lv_obj_add_event_cb(ctrl, analog_out_slider_cb, LV_EVENT_RELEASED,
+                          (void*)context_idx);
       lv_obj_add_event_cb(ctrl, analog_out_slider_cb, LV_EVENT_VALUE_CHANGED,
                           (void*)context_idx);
     } else if (cap.type == "analogInput") {
@@ -457,8 +491,8 @@ static void populate_capability_controls(size_t node_idx) {
       lv_obj_set_size(ctrl, 60, 6);
       lv_bar_set_range(ctrl, 0, 255);
       lv_bar_set_value(ctrl, cap.value, LV_ANIM_OFF);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x404040), LV_PART_MAIN);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(0x8A8A8A),
+      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_track()), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_muted()),
                                 LV_PART_INDICATOR);
     } else if (cap.type == "digitalInput") {
       ctrl = lv_obj_create(row);
@@ -466,7 +500,7 @@ static void populate_capability_controls(size_t node_idx) {
       lv_obj_set_style_radius(ctrl, LV_RADIUS_CIRCLE, LV_PART_MAIN);
       lv_obj_set_style_border_width(ctrl, 0, LV_PART_MAIN);
       lv_obj_set_style_bg_color(
-          ctrl, cap.value > 0 ? lv_color_hex(0x00A8E8) : lv_color_hex(0x404040),
+          ctrl, cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track()),
           LV_PART_MAIN);
     }
 
@@ -526,7 +560,7 @@ static void update_capability_values(size_t node_idx) {
       }
     } else if (w.type == "digitalInput") {
       lv_color_t c =
-          cap.value > 0 ? lv_color_hex(0x00A8E8) : lv_color_hex(0x404040);
+          cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track());
       lv_obj_set_style_bg_color(w.control, c, LV_PART_MAIN);
     }
   }
@@ -542,7 +576,10 @@ static void node_select_cb(lv_event_t* e) {
   }
 }
 
-static void send_cmd_with_hub_sync(size_t nodeIdx, size_t capIdx, int value) {
+// Sends over ESP-NOW immediately (fast local path) and, when sync_hub is set,
+// queues the hub update on the network worker so the UI never blocks.
+static void send_cmd_with_hub_sync(size_t nodeIdx, size_t capIdx, int value,
+                                   bool sync_hub = true) {
   if (nodeIdx >= discovered_nodes.size()) return;
   // Don't send commands to offline nodes
   if (!is_node_online(nodeIdx)) return;
@@ -550,12 +587,13 @@ static void send_cmd_with_hub_sync(size_t nodeIdx, size_t capIdx, int value) {
   if (capIdx >= node.capabilities.size()) return;
   auto& cap = node.capabilities[capIdx];
   cap.value = value;
-  GatewayDiscovery::sendPinCommand(node.deviceIdNum, cap.pin, value);
+  GatewayDiscovery::sendPinCommand(node.deviceIdNum, cap.pin,
+                                   value > 255 ? 255 : value);
   if (auto* dmNode = DataManager::instance().getNode(nodeIdx)) {
     if (capIdx < dmNode->capabilities.size()) {
       dmNode->capabilities[capIdx].value = value;
     }
-    DataManager::instance().sendCommand(nodeIdx, cap.pin, value);
+    if (sync_hub) DataManager::instance().sendCommand(nodeIdx, cap.pin, value);
   }
 }
 
@@ -570,7 +608,17 @@ static void analog_out_slider_cb(lv_event_t* e) {
   lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
   int value = lv_slider_get_value(slider);
   size_t ci = (size_t)lv_event_get_user_data(e);
-  send_cmd_with_hub_sync(active_node_index, ci, value);
+  if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+    // Final value: make sure the node and the hub both have it.
+    send_cmd_with_hub_sync(active_node_index, ci, value, true);
+    return;
+  }
+  // While dragging, throttle the radio and skip the hub entirely.
+  static uint32_t last_send = 0;
+  uint32_t now = millis();
+  if (now - last_send < 80) return;
+  last_send = now;
+  send_cmd_with_hub_sync(active_node_index, ci, value, false);
 }
 
 static void sync_nodes_from_data_manager() {

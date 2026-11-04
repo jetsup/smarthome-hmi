@@ -8,7 +8,9 @@
 #include "gateway_discovery.hpp"
 #include "network_manager.hpp"
 #include "preferences_manager.hpp"
+#include "theme.hpp"
 #include "ui_managers.hpp"
+#include "wifi_provisioner.hpp"
 
 #define LED_COUNT 1
 #define LED_PIN 0
@@ -28,6 +30,11 @@ void my_disp_flush(lv_display_t* display, const lv_area_t* area,
 void my_touchpad_read(lv_indev_t* indev_driver, lv_indev_data_t* data) {
   uint16_t x, y;
   uint8_t touched = tft.getTouch(&x, &y);
+  static uint32_t last_log = 0;
+  if (touched && millis() - last_log > 300) {
+    last_log = millis();
+    Serial.printf("[TOUCH] x=%u y=%u\n", x, y);
+  }
   if (!touched) {
     data->state = LV_INDEV_STATE_RELEASED;
   } else {
@@ -46,8 +53,19 @@ void setup() {
 
   PreferencesManager::instance().init();
 
+  // Older firmware paired without a hub token; the hub now requires one, so
+  // drop the stale pairing and let the user pair again.
+  {
+    auto& prefs = PreferencesManager::instance();
+    if (prefs.hasPairedGateway() && prefs.getHubToken().isEmpty()) {
+      Serial.println("[Boot] paired gateway has no hub token — clearing pairing");
+      prefs.clearPairedGateway();
+    }
+  }
+
+  theme::loadSaved();
   tft.init();
-  tft.setBrightness(255);
+  tft.setBrightness((uint16_t)theme::get().brightness * 255 / 100);
   tft.setRotation(5);
 
   lv_init();
@@ -65,6 +83,7 @@ void setup() {
 
   auto& net = NetworkManager::instance();
   net.setHubAddress(HMI_HUB_HOST, HMI_HUB_PORT);
+  net.setAuthToken(PreferencesManager::instance().getHubToken());
 
   GatewayDiscovery::instance().begin();
 
@@ -78,6 +97,8 @@ void setup() {
 }
 
 void loop() {
+  NetworkManager::instance().update();
+  WifiProvisioner::instance().update();
   GatewayDiscovery::instance().update();
   lv_timer_handler();
   delay(5);

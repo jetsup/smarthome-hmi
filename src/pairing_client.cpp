@@ -1,5 +1,7 @@
 #include "pairing_client.hpp"
+#include "device_id.hpp"
 #include "network_manager.hpp"
+#include "preferences_manager.hpp"
 #include <ArduinoJson.h>
 
 PairingClient& PairingClient::instance() {
@@ -43,8 +45,10 @@ PairingResult PairingClient::verifyCode(const String& code) {
         return result;
     }
 
+    // The device id lets the hub recognise this display (and list it in the app).
     String body = "{\"gatewayId\":\"" + m_gatewayId +
-                  "\",\"code\":\"" + code + "\"}";
+                  "\",\"code\":\"" + code +
+                  "\",\"deviceId\":\"" + hmiDeviceId() + "\"}";
     String resp;
     int codeVal =
         NetworkManager::instance().httpPost("/api/pair/verify", body, resp);
@@ -63,9 +67,17 @@ PairingResult PairingClient::verifyCode(const String& code) {
 
     result.success = doc["success"].as<bool>();
     if (!result.success) {
-        result.error = doc["error"].as<const char*>();
+        result.error = String(doc["error"] | "");
         if (result.error.isEmpty()) result.error = "Code incorrect";
     } else {
+        const char* tok = doc["token"] | "";
+        if (tok[0] == '\0') {
+            result.success = false;
+            result.error = "Hub did not issue a token";
+            return result;
+        }
+        PreferencesManager::instance().setHubToken(tok);
+        NetworkManager::instance().setAuthToken(tok);
         result.gatewayName = m_gatewayName;
         m_paired = true;
     }

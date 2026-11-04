@@ -1,3 +1,4 @@
+#include "theme.hpp"
 #include "ui_managers.hpp"
 
 #include "config.hpp"
@@ -8,9 +9,11 @@
 #include "preferences_manager.hpp"
 #include "ui_dashboard.hpp"
 #include "ui_gateway_scan.hpp"
+#include "ui_pair_screens.hpp"
 #include "ui_pairing.hpp"
 #include "ui_screens.hpp"
 #include "ui_wifi_screen.hpp"
+#include "ui_wifi_setup.hpp"
 
 static void trigger_dashboard_with_data();
 
@@ -85,6 +88,19 @@ static void check_wifi_and_route() {
 }
 
 static void splash_data_cb(lv_timer_t* timer) {
+  // Tell the user what the connection logic is doing.
+  {
+    auto& nm = NetworkManager::instance();
+    String msg;
+    switch (nm.autoState()) {
+      case NetworkManager::AutoState::Scanning: msg = "Looking for your Wi-Fi..."; break;
+      case NetworkManager::AutoState::Connecting: msg = "Connecting to " + nm.autoTarget() + "..."; break;
+      case NetworkManager::AutoState::NoneInRange: msg = "Saved Wi-Fi not in range, retrying..."; break;
+      case NetworkManager::AutoState::Connected: msg = "Connected to " + nm.autoTarget(); break;
+      default: break;
+    }
+    if (msg.length()) update_splash_status(msg.c_str());
+  }
   if (NetworkManager::instance().isWiFiConnected()) {
     auto& prefs = PreferencesManager::instance();
 
@@ -106,6 +122,9 @@ static void splash_data_cb(lv_timer_t* timer) {
 }
 
 static void splash_timeout_cb(lv_timer_t* timer) {
+  // This callback IS splash_timer. Forget the handle first so the trigger_*
+  // helpers don't delete the running timer a second time (use-after-free).
+  if (timer == splash_timer) splash_timer = nullptr;
   if (data_load_timer) {
     lv_timer_delete(data_load_timer);
     data_load_timer = nullptr;
@@ -146,13 +165,14 @@ void trigger_splash_sequence() {
   auto& net = NetworkManager::instance();
   auto& prefs = PreferencesManager::instance();
 
-  if (prefs.hasWifiCredentials()) {
-    auto creds = prefs.loadWifiCredentials();
-    net.begin(creds.ssid.c_str(), creds.password.c_str());
-  }
+  // Pick the best saved network (priority order, in range) without blocking the UI.
+  if (prefs.hasWifiCredentials()) net.beginAuto();
 
   data_load_timer = lv_timer_create(splash_data_cb, 500, nullptr);
-  splash_timer = lv_timer_create(splash_timeout_cb, 20000, nullptr);
+  // With nothing saved there is nothing to wait for: offer setup right away.
+  bool haveCreds = prefs.hasWifiCredentials();
+  if (!haveCreds) update_splash_status("No Wi-Fi configured.");
+  splash_timer = lv_timer_create(splash_timeout_cb, haveCreds ? 20000 : 1200, nullptr);
 }
 
 void trigger_wifi_settings() {
@@ -165,11 +185,29 @@ void trigger_wifi_settings() {
     lv_timer_delete(splash_timer);
     splash_timer = nullptr;
   }
-  if (splash_screen != nullptr) {
-    lv_obj_delete(splash_screen);
-    splash_screen = nullptr;
+  cleanup_wifi_screen();
+  // build_wifi_setup_screen() deletes whichever screen is active (the splash),
+  // so only drop our pointer to it.
+  splash_screen = nullptr;
+  build_wifi_setup_screen(false);
+}
+
+void trigger_after_wifi_connected() {
+  cleanup_wifi_screen();
+  cleanup_wifi_setup_screen();
+  lv_obj_t* old = lv_screen_active();
+  auto& prefs = PreferencesManager::instance();
+  if (prefs.hasPairedGateway()) {
+    auto& dm = DataManager::instance();
+    dm.setGatewayId(prefs.getPairedGatewayId());
+    dm.setGatewayName(prefs.getPairedGatewayName());
+    dm.fetchNodes();  // falls back to cache if the hub is unreachable
+    trigger_dashboard_with_data();
+  } else {
+    trigger_gateway_scan();
   }
-  build_wifi_screen();
+  // Free the setup screen we came from (it holds a QR canvas).
+  if (old && old != lv_screen_active() && lv_obj_is_valid(old)) lv_obj_delete(old);
 }
 
 void trigger_gateway_scan() {
@@ -182,11 +220,10 @@ void trigger_gateway_scan() {
     lv_timer_delete(splash_timer);
     splash_timer = nullptr;
   }
-  if (splash_screen != nullptr) {
-    lv_obj_delete(splash_screen);
-    splash_screen = nullptr;
-  }
-  build_gateway_scan_screen();
+  // The pairing chooser replaces (and deletes) whichever screen is showing, so
+  // only forget the splash pointer here.
+  splash_screen = nullptr;
+  build_pair_method_screen(false);
 }
 
 void trigger_pairing_flow() {
@@ -224,8 +261,12 @@ void trigger_pairing_flow() {
 
 void trigger_main_dashboard_sequence() {
   cleanup_gateway_scan_screen();
+  cleanup_pair_screens();
+  lv_obj_t* old = lv_screen_active();
   build_main_dashboard_layout();
   lv_screen_load(main_screen);
+  // Free the pairing / setup screen we came from (the QR canvas is large).
+  if (old && old != main_screen && lv_obj_is_valid(old)) lv_obj_delete(old);
 }
 
 void trigger_dashboard_with_data() {

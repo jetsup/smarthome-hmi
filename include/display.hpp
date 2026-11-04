@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Arduino_GFX_Library.h"
-#include "TouchDrvCSTXXX.hpp"
+#include <Wire.h>
 
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -38,7 +38,7 @@ class LGFX {
   Arduino_GFX* gfx =
       new Arduino_ST7789(bus, LCD_RST /* RST */, 5 /* rotation */,
                          false /* IPS */, 240 /* width */, 320 /* height */);
-  TouchDrvCST816 touch;
+  bool touch_ok = false;
 
   LGFX() {}
 
@@ -47,27 +47,25 @@ class LGFX {
     gfx->draw16bitBeRGBBitmap(x, y, data, w, h);
   }
 
+  // Reads the first touch point. CHSC6540 register map: 0x02 = touch count,
+  // 0x03/0x04 = X high(4 bits)/low, 0x05/0x06 = Y high/low.
   bool getTouch(uint16_t* x, uint16_t* y) {
-    int16_t x_arr[5], y_arr[5];
-    uint8_t touched =
-        touch.getPoint(x_arr, y_arr, touch.getSupportTouchPoint());
+    if (!touch_ok) return false;
+    uint8_t buf[7] = {0};
+    Wire.beginTransmission(TOUCH_ADDR);
+    Wire.write((uint8_t)0x00);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)7) != 7) return false;
+    for (int i = 0; i < 7; i++) buf[i] = Wire.read();
+    if ((buf[2] & 0x0F) == 0) return false;
 
-    if (touched) {
-      // For rotation 5, the raw touch hardware coordinates are usually swapped
-      // We map the raw inputs to our 320x240 landscape plane
-      uint16_t raw_x = x_arr[0];
-      uint16_t raw_y = y_arr[0];
+    uint16_t raw_x = ((buf[3] & 0x0F) << 8) | buf[4];
+    uint16_t raw_y = ((buf[5] & 0x0F) << 8) | buf[6];
 
-      // --- ORIENTATION TRANSFORM FOR ROTATION 5 ---
-      // Swap X and Y, and invert the new X axis against the screen width
-      *x = SCREEN_WIDTH - raw_y;
-      *y = raw_x;
-
-      // Optional: Print coordinates to Serial Monitor to debug alignment
-      // Serial.printf("Touch mapped -> X: %d, Y: %d\n", *x, *y);
-    }
-
-    return touched;
+    // Orientation transform for rotation 5 (swap axes, invert X).
+    *x = SCREEN_WIDTH - raw_y;
+    *y = raw_x;
+    return true;
   }
 
   void setBrightness(uint8_t brightness) { ledcWrite(BL_CHANNEL, brightness); }
@@ -84,8 +82,17 @@ class LGFX {
     gfx->begin();
     setRotation(5);
 
-    touch.setPins(TOUCH_RST, TOUCH_INT);
-    touch.begin(Wire, TOUCH_ADDR, TOUCH_SDA, TOUCH_SCL);
+    // CHSC6540 capacitive touch (FT5x06-style register map) at 0x2E.
+    pinMode(TOUCH_RST, OUTPUT);
+    digitalWrite(TOUCH_RST, LOW);
+    delay(20);
+    digitalWrite(TOUCH_RST, HIGH);
+    delay(300);
+    Wire.begin(TOUCH_SDA, TOUCH_SCL, 400000);
+    Wire.beginTransmission(TOUCH_ADDR);
+    touch_ok = (Wire.endTransmission() == 0);
+    Serial.printf("[TOUCH] CHSC6540 at 0x%02X: %s\n", TOUCH_ADDR,
+                  touch_ok ? "found" : "NOT FOUND");
   }
 
   void setRotation(uint8_t r) {

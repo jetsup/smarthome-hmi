@@ -1,27 +1,29 @@
+#include "theme.hpp"
 #include "ui_system_screen.hpp"
 
+#include "network_manager.hpp"
 #include "preferences_manager.hpp"
 #include "ui_managers.hpp"
 #include "ui_screens.hpp"
 #include "ui_settings.hpp"
-#include "ui_wifi_screen.hpp"
+#include "ui_wifi_setup.hpp"
 
 void build_system_screen() {
   lv_obj_t* old_screen = lv_screen_active();
 
   lv_obj_t* scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x121214), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(th_page()), LV_PART_MAIN);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t* back_btn = lv_button_create(scr);
   lv_obj_set_size(back_btn, 36, 28);
   lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 6, 6);
-  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_radius(back_btn, 4, LV_PART_MAIN);
   lv_obj_set_style_border_width(back_btn, 0, LV_PART_MAIN);
   lv_obj_t* back_lbl = lv_label_create(back_btn);
   lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-  lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(back_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_center(back_lbl);
   lv_obj_add_event_cb(
       back_btn, [](lv_event_t*) { build_settings_screen(); }, LV_EVENT_CLICKED,
@@ -29,14 +31,14 @@ void build_system_screen() {
 
   lv_obj_t* title = lv_label_create(scr);
   lv_label_set_text(title, LV_SYMBOL_SETTINGS " System");
-  lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
   lv_obj_t* div = lv_obj_create(scr);
   lv_obj_set_size(div, 280, 1);
   lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 38);
-  lv_obj_set_style_bg_color(div, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(div, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_border_width(div, 0, LV_PART_MAIN);
 
   lv_obj_t* panel = lv_obj_create(scr);
@@ -73,7 +75,7 @@ void build_system_screen() {
   lv_label_set_text(desc,
                     "Clears all saved data including Wi-Fi\ncredentials, "
                     "gateway pairing, and cache");
-  lv_obj_set_style_text_color(desc, lv_color_hex(0x656565), LV_PART_MAIN);
+  lv_obj_set_style_text_color(desc, lv_color_hex(th_dim()), LV_PART_MAIN);
   lv_obj_set_style_text_font(desc, &lv_font_montserrat_8, LV_PART_MAIN);
   lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
   lv_obj_align(desc, LV_ALIGN_BOTTOM_MID, 20, -8);
@@ -90,10 +92,10 @@ void build_system_screen() {
         lv_obj_t* container = lv_obj_create(dialog);
         lv_obj_set_size(container, 290, 170);
         lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(container, lv_color_hex(0x1E1E24),
+        lv_obj_set_style_bg_color(container, lv_color_hex(th_panel()),
                                   LV_PART_MAIN);
         lv_obj_set_style_border_width(container, 1, LV_PART_MAIN);
-        lv_obj_set_style_border_color(container, lv_color_hex(0x2D2D35),
+        lv_obj_set_style_border_color(container, lv_color_hex(th_surface()),
                                       LV_PART_MAIN);
         lv_obj_set_style_radius(container, 8, LV_PART_MAIN);
         lv_obj_center(container);
@@ -106,7 +108,7 @@ void build_system_screen() {
 
         lv_obj_t* lbl = lv_label_create(container);
         lv_label_set_text(lbl, "Reset all data?\nThis cannot be undone.");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(th_text()), LV_PART_MAIN);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, LV_PART_MAIN);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
         lv_obj_align(lbl, LV_ALIGN_CENTER, 0, -10);
@@ -124,12 +126,12 @@ void build_system_screen() {
 
         lv_obj_t* cancel_btn = lv_button_create(btn_row);
         lv_obj_set_size(cancel_btn, 90, 32);
-        lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x2D2D35),
+        lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(th_surface()),
                                   LV_PART_MAIN);
         lv_obj_set_style_radius(cancel_btn, 4, LV_PART_MAIN);
         lv_obj_t* cancel_lbl = lv_label_create(cancel_btn);
         lv_label_set_text(cancel_lbl, "Cancel");
-        lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(0xFFFFFF),
+        lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(th_text()),
                                     LV_PART_MAIN);
         lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_10,
                                    LV_PART_MAIN);
@@ -160,9 +162,16 @@ void build_system_screen() {
               lv_obj_delete(d);
 
               auto& prefs = PreferencesManager::instance();
+              // Remove this display from the hub (and free its nodes). Best effort:
+              // it may be offline, in which case the owner can unpair it in the app.
+              if (NetworkManager::instance().hasAuthToken()) {
+                String ignored;
+                NetworkManager::instance().httpPost("/api/hmi/unpair", "{}", ignored);
+              }
               prefs.clearSystem();
+              NetworkManager::instance().setAuthToken("");
 
-              build_wifi_screen(false);
+              build_wifi_setup_screen(false);
             },
             LV_EVENT_CLICKED, dialog);
       },

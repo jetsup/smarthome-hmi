@@ -1,8 +1,10 @@
+#include "theme.hpp"
 #include "ui_gateway_scan.hpp"
 
 #include "gateway_discovery.hpp"
 #include "pairing_client.hpp"
 #include "ui_managers.hpp"
+#include "ui_pair_screens.hpp"
 #include "ui_screens.hpp"
 #include "ui_settings.hpp"
 
@@ -40,14 +42,16 @@ static void add_gateway_card(size_t idx) {
   lv_obj_t* card = lv_button_create(gw_list_panel);
   lv_obj_set_width(card, LV_PCT(100));
   lv_obj_set_height(card, 44);
-  lv_obj_set_style_bg_color(card, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(card, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_radius(card, 6, LV_PART_MAIN);
   lv_obj_add_event_cb(card, select_gateway_cb, LV_EVENT_CLICKED, (void*)idx);
 
   lv_obj_t* name_lbl = lv_label_create(card);
   lv_label_set_text(name_lbl, gw->name.c_str());
+  lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(name_lbl, LV_PCT(62));
   lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, LV_PART_MAIN);
-  lv_obj_set_style_text_color(name_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(name_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_align(name_lbl, LV_ALIGN_LEFT_MID, 10, 0);
 
   char id_buf[32];
@@ -55,7 +59,7 @@ static void add_gateway_card(size_t idx) {
   lv_obj_t* id_lbl = lv_label_create(card);
   lv_label_set_text(id_lbl, id_buf);
   lv_obj_set_style_text_font(id_lbl, &lv_font_montserrat_8, LV_PART_MAIN);
-  lv_obj_set_style_text_color(id_lbl, lv_color_hex(0x8A8A8A), LV_PART_MAIN);
+  lv_obj_set_style_text_color(id_lbl, lv_color_hex(th_muted()), LV_PART_MAIN);
   lv_obj_align(id_lbl, LV_ALIGN_RIGHT_MID, -10, 0);
 
   displayed_count++;
@@ -78,7 +82,7 @@ static void sync_gateway_list() {
     lv_obj_clean(gw_list_panel);
     no_gw_label = lv_label_create(gw_list_panel);
     lv_label_set_text(no_gw_label, "No gateways found.\nTap Scan to discover.");
-    lv_obj_set_style_text_color(no_gw_label, lv_color_hex(0x8A8A8A),
+    lv_obj_set_style_text_color(no_gw_label, lv_color_hex(th_muted()),
                                 LV_PART_MAIN);
     lv_obj_set_style_text_font(no_gw_label, &lv_font_montserrat_10,
                                LV_PART_MAIN);
@@ -118,7 +122,7 @@ static void on_scan_clicked(lv_event_t* e) {
   lv_obj_clean(gw_list_panel);
   no_gw_label = lv_label_create(gw_list_panel);
   lv_label_set_text(no_gw_label, "No gateways found.\nTap Scan to discover.");
-  lv_obj_set_style_text_color(no_gw_label, lv_color_hex(0x8A8A8A),
+  lv_obj_set_style_text_color(no_gw_label, lv_color_hex(th_muted()),
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(no_gw_label, &lv_font_montserrat_10, LV_PART_MAIN);
   lv_obj_center(no_gw_label);
@@ -144,25 +148,22 @@ void cleanup_gateway_scan_screen() {
 void build_gateway_scan_screen(bool fromSettings) {
   g_from_settings = fromSettings;
 
-  lv_obj_t* old_screen = nullptr;
-  if (fromSettings) {
-    old_screen = lv_screen_active();
-  }
+  lv_obj_t* old_screen = lv_screen_active();
 
   lv_obj_t* scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x1E1E24), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(th_panel()), LV_PART_MAIN);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-  if (g_from_settings) {
+  {
     lv_obj_t* back_btn = lv_button_create(scr);
     lv_obj_set_size(back_btn, 36, 28);
     lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 6, 6);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
     lv_obj_set_style_radius(back_btn, 4, LV_PART_MAIN);
     lv_obj_set_style_border_width(back_btn, 0, LV_PART_MAIN);
     lv_obj_t* back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
     lv_obj_center(back_lbl);
     lv_obj_add_event_cb(
         back_btn,
@@ -173,7 +174,7 @@ void build_gateway_scan_screen(bool fromSettings) {
           }
           gw_list_panel = nullptr;
           no_gw_label = nullptr;
-          build_settings_screen();
+          build_pair_method_screen(g_from_settings);
         },
         LV_EVENT_CLICKED, nullptr);
   }
@@ -181,18 +182,18 @@ void build_gateway_scan_screen(bool fromSettings) {
   lv_obj_t* title = lv_label_create(scr);
   lv_label_set_text(title, "Select Gateway");
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
-  lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
   lv_obj_t* div = lv_obj_create(scr);
   lv_obj_set_size(div, 280, 1);
   lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 38);
-  lv_obj_set_style_bg_color(div, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(div, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_border_width(div, 0, LV_PART_MAIN);
 
   lv_obj_t* instr = lv_label_create(scr);
   lv_label_set_text(instr, "Discovered gateways:");
-  lv_obj_set_style_text_color(instr, lv_color_hex(0x8A8A8A), LV_PART_MAIN);
+  lv_obj_set_style_text_color(instr, lv_color_hex(th_muted()), LV_PART_MAIN);
   lv_obj_set_style_text_font(instr, &lv_font_montserrat_10, LV_PART_MAIN);
   lv_obj_align(instr, LV_ALIGN_TOP_LEFT, 15, 50);
 
@@ -209,17 +210,17 @@ void build_gateway_scan_screen(bool fromSettings) {
 
   scan_spinner = lv_spinner_create(scan_row);
   lv_obj_set_size(scan_spinner, 20, 20);
-  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x404040),
+  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(th_track()),
                              LV_PART_MAIN);
   lv_obj_set_style_arc_width(scan_spinner, 3, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(0x00A8E8),
+  lv_obj_set_style_arc_color(scan_spinner, lv_color_hex(th_accent()),
                              LV_PART_INDICATOR);
   lv_obj_set_style_arc_width(scan_spinner, 3, LV_PART_INDICATOR);
   lv_obj_add_flag(scan_spinner, LV_OBJ_FLAG_HIDDEN);
 
   scan_btn = lv_button_create(scan_row);
   lv_obj_set_size(scan_btn, 60, 26);
-  lv_obj_set_style_bg_color(scan_btn, lv_color_hex(0x00A8E8), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(scan_btn, lv_color_hex(th_accent()), LV_PART_MAIN);
   lv_obj_set_style_radius(scan_btn, 4, LV_PART_MAIN);
   lv_obj_add_event_cb(scan_btn, on_scan_clicked, LV_EVENT_CLICKED, nullptr);
 
@@ -235,17 +236,17 @@ void build_gateway_scan_screen(bool fromSettings) {
   lv_obj_set_flex_flow(gw_list_panel, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(gw_list_panel, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(gw_list_panel, LV_SCROLLBAR_MODE_AUTO);
-  lv_obj_set_style_bg_color(gw_list_panel, lv_color_hex(0x121214),
+  lv_obj_set_style_bg_color(gw_list_panel, lv_color_hex(th_page()),
                             LV_PART_MAIN);
   lv_obj_set_style_border_width(gw_list_panel, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(gw_list_panel, lv_color_hex(0x2D2D35),
+  lv_obj_set_style_border_color(gw_list_panel, lv_color_hex(th_surface()),
                                 LV_PART_MAIN);
   lv_obj_set_style_pad_all(gw_list_panel, 6, LV_PART_MAIN);
   lv_obj_set_style_pad_row(gw_list_panel, 6, LV_PART_MAIN);
 
   no_gw_label = lv_label_create(gw_list_panel);
   lv_label_set_text(no_gw_label, "No gateways found.\nTap Scan to discover.");
-  lv_obj_set_style_text_color(no_gw_label, lv_color_hex(0x8A8A8A),
+  lv_obj_set_style_text_color(no_gw_label, lv_color_hex(th_muted()),
                               LV_PART_MAIN);
   lv_obj_set_style_text_font(no_gw_label, &lv_font_montserrat_10, LV_PART_MAIN);
   lv_obj_center(no_gw_label);
@@ -254,7 +255,7 @@ void build_gateway_scan_screen(bool fromSettings) {
 
   lv_screen_load(scr);
 
-  if (old_screen != nullptr) {
+  if (old_screen != nullptr && old_screen != scr && lv_obj_is_valid(old_screen)) {
     lv_obj_delete(old_screen);
   }
 

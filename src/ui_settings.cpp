@@ -1,3 +1,4 @@
+#include "theme.hpp"
 #include "ui_settings.hpp"
 
 #include "config.hpp"
@@ -6,7 +7,9 @@
 #include "ui_managers.hpp"
 #include "ui_screens.hpp"
 #include "ui_system_screen.hpp"
-#include "ui_wifi_screen.hpp"
+#include "ui_pair_screens.hpp"
+#include "ui_wifi_saved.hpp"
+#include "ui_wifi_setup.hpp"
 
 static void settings_item_cb(lv_event_t* e);
 
@@ -21,18 +24,18 @@ void build_settings_screen() {
   lv_obj_t* old_screen = lv_screen_active();
 
   lv_obj_t* scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x121214), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(th_page()), LV_PART_MAIN);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t* back_btn = lv_button_create(scr);
   lv_obj_set_size(back_btn, 36, 28);
   lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 6, 6);
-  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_radius(back_btn, 4, LV_PART_MAIN);
   lv_obj_set_style_border_width(back_btn, 0, LV_PART_MAIN);
   lv_obj_t* back_lbl = lv_label_create(back_btn);
   lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-  lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(back_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_center(back_lbl);
   lv_obj_add_event_cb(
       back_btn, [](lv_event_t*) { trigger_main_dashboard_sequence(); },
@@ -40,14 +43,14 @@ void build_settings_screen() {
 
   lv_obj_t* title = lv_label_create(scr);
   lv_label_set_text(title, LV_SYMBOL_SETTINGS " Settings");
-  lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
   lv_obj_t* div = lv_obj_create(scr);
   lv_obj_set_size(div, 280, 1);
   lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 38);
-  lv_obj_set_style_bg_color(div, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(div, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_border_width(div, 0, LV_PART_MAIN);
 
   lv_obj_t* panel = lv_obj_create(scr);
@@ -77,7 +80,7 @@ void build_settings_screen() {
     lv_obj_t* item = lv_button_create(panel);
     lv_obj_set_width(item, LV_PCT(100));
     lv_obj_set_height(item, 36);
-    lv_obj_set_style_bg_color(item, lv_color_hex(0x1E1E24), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(item, lv_color_hex(th_panel()), LV_PART_MAIN);
     lv_obj_set_style_radius(item, 4, LV_PART_MAIN);
     lv_obj_set_style_pad_left(item, 12, LV_PART_MAIN);
     lv_obj_set_style_pad_right(item, 12, LV_PART_MAIN);
@@ -92,13 +95,13 @@ void build_settings_screen() {
     lv_obj_t* label = lv_label_create(item);
     lv_label_set_text(label, entries[i].label);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_color(label, lv_color_hex(th_text()), LV_PART_MAIN);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 30, 0);
 
     lv_obj_t* chevron = lv_label_create(item);
     lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
     lv_obj_set_style_text_font(chevron, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_style_text_color(chevron, lv_color_hex(0x656565), LV_PART_MAIN);
+    lv_obj_set_style_text_color(chevron, lv_color_hex(th_dim()), LV_PART_MAIN);
     lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -8, 0);
   }
 
@@ -108,7 +111,10 @@ void build_settings_screen() {
       (prefs.hasPairedGateway() ? prefs.getPairedGatewayName() : "None");
   lv_obj_t* footer_lbl = lv_label_create(scr);
   lv_label_set_text(footer_lbl, footer.c_str());
-  lv_obj_set_style_text_color(footer_lbl, lv_color_hex(0x656565), LV_PART_MAIN);
+  lv_label_set_long_mode(footer_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(footer_lbl, SCREEN_WIDTH - 40);
+  lv_obj_set_style_text_align(footer_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_set_style_text_color(footer_lbl, lv_color_hex(th_dim()), LV_PART_MAIN);
   lv_obj_set_style_text_font(footer_lbl, &lv_font_montserrat_8, LV_PART_MAIN);
   lv_obj_align(footer_lbl, LV_ALIGN_BOTTOM_MID, 0, -10);
 
@@ -125,10 +131,10 @@ static void settings_item_cb(lv_event_t* e) {
 
   switch (action) {
     case ACTION_WIFI:
-      build_wifi_screen(true);
+      build_wifi_saved_screen();
       break;
     case ACTION_GATEWAY:
-      build_gateway_scan_screen(true);
+      build_pair_method_screen(true);
       break;
     case ACTION_SYSTEM:
       build_system_screen();
@@ -143,18 +149,18 @@ void build_about_screen() {
   lv_obj_t* old_screen = lv_screen_active();
 
   lv_obj_t* scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x121214), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(th_page()), LV_PART_MAIN);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t* back_btn = lv_button_create(scr);
   lv_obj_set_size(back_btn, 36, 28);
   lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 6, 6);
-  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_radius(back_btn, 4, LV_PART_MAIN);
   lv_obj_set_style_border_width(back_btn, 0, LV_PART_MAIN);
   lv_obj_t* back_lbl = lv_label_create(back_btn);
   lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-  lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(back_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_center(back_lbl);
   lv_obj_add_event_cb(
       back_btn, [](lv_event_t*) { build_settings_screen(); }, LV_EVENT_CLICKED,
@@ -162,14 +168,14 @@ void build_about_screen() {
 
   lv_obj_t* title = lv_label_create(scr);
   lv_label_set_text(title, "About");
-  lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(th_text()), LV_PART_MAIN);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
   lv_obj_t* div = lv_obj_create(scr);
   lv_obj_set_size(div, 280, 1);
   lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 38);
-  lv_obj_set_style_bg_color(div, lv_color_hex(0x2D2D35), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(div, lv_color_hex(th_surface()), LV_PART_MAIN);
   lv_obj_set_style_border_width(div, 0, LV_PART_MAIN);
 
   lv_obj_t* info = lv_label_create(scr);
@@ -177,7 +183,7 @@ void build_about_screen() {
   text += "Hub: " + String(HMI_HUB_HOST) + ":" + String(HMI_HUB_PORT) + "\n\n";
   text += "Firmware: ESP32-S3\nDisplay: 320x240";
   lv_label_set_text(info, text.c_str());
-  lv_obj_set_style_text_color(info, lv_color_hex(0x8A8A8A), LV_PART_MAIN);
+  lv_obj_set_style_text_color(info, lv_color_hex(th_muted()), LV_PART_MAIN);
   lv_obj_set_style_text_font(info, &lv_font_montserrat_10, LV_PART_MAIN);
   lv_obj_set_style_text_align(info, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
   lv_obj_align(info, LV_ALIGN_CENTER, 0, -10);

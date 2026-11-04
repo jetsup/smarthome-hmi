@@ -1,3 +1,4 @@
+#include "theme.hpp"
 #include "data_manager.hpp"
 
 #include <ArduinoJson.h>
@@ -58,6 +59,29 @@ String DataManager::findHexGatewayId(const String& name) {
     }
   }
   return "";
+}
+
+bool DataManager::refreshGatewayName() {
+  String resp;
+  if (NetworkManager::instance().httpGet("/api/hmi/gateway", resp) != 200) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, resp)) return false;
+  JsonObject ap = doc["appearance"];
+  if (!ap.isNull()) {
+    String th = ap["theme"] | "dark";
+    String ac = ap["accent"] | "00A8E8";
+    uint32_t accent = strtoul(ac.c_str(), nullptr, 16);
+    if (theme::update(th == "light", accent, ap["brightness"] | 100,
+                      ap["statusLed"] | true))
+      m_lookChanged = true;
+  }
+  String name = doc["name"] | "";
+  if (name.isEmpty() || name == m_gatewayName) return false;
+  Serial.printf("[DM] Gateway renamed: '%s' -> '%s'\n", m_gatewayName.c_str(), name.c_str());
+  m_gatewayName = name;
+  auto& prefs = PreferencesManager::instance();
+  prefs.setPairedGateway(prefs.getPairedGatewayId(), name);
+  return true;
 }
 
 bool DataManager::fetchNodes() {
@@ -146,9 +170,8 @@ bool DataManager::sendCommand(size_t nodeIndex, int pin, int value) {
 
   String body = "{\"pin\":" + String(pin) + ",\"value\":" + String(value) + "}";
   String path = "/api/hmi/nodes/" + node.deviceId + "/command";
-  String resp;
-  int code = NetworkManager::instance().httpPost(path, body, resp);
-  return code == 200;
+  // Non-blocking: the hub sync happens on the network worker task.
+  return NetworkManager::instance().postAsync(path, body);
 }
 
 const NodeInfo* DataManager::getNode(size_t index) const {

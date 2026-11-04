@@ -22,7 +22,7 @@ struct __attribute__((packed)) GatewayAnnouncePkt {
   uint8_t header;
   uint8_t msgType;
   uint32_t gatewayId;
-  char name[8];
+  char name[32];  // full gateway name (up to 31 chars)
   uint8_t checksum;
 };
 
@@ -160,7 +160,7 @@ void GatewayDiscovery::handleEspNowPacket(const uint8_t* mac,
   if (idx < 0) {
     DiscoveredGateway gw;
     gw.id = String(pkt->gatewayId);
-    gw.name = String(pkt->name);
+    gw.name = String(String(pkt->name, strnlen(pkt->name, sizeof(pkt->name))));
     memcpy(gw.mac, mac, 6);
     gw.rssi = 0;
     gw.lastSeen = millis();
@@ -173,7 +173,7 @@ void GatewayDiscovery::handleEspNowPacket(const uint8_t* mac,
   } else {
     m_gateways[idx].lastSeen = millis();
     m_gateways[idx].id = String(pkt->gatewayId);
-    m_gateways[idx].name = String(pkt->name);
+    m_gateways[idx].name = String(pkt->name, strnlen(pkt->name, sizeof(pkt->name)));
     Serial.printf("[GW] Updated gateway %s (%s)\n",
                   m_gateways[idx].name.c_str(), macStr);
   }

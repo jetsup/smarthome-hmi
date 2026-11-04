@@ -32,6 +32,10 @@ public:
     void setGatewayName(const String& name) { m_gatewayName = name; }
     String gatewayId() const { return m_gatewayId; }
     bool fetchNodes();
+    // Follow a rename done in the app / web: updates the stored gateway name.
+    bool refreshGatewayName();
+    // True once after the hub changed the display's theme/accent.
+    bool takeLookChanged() { bool v = m_lookChanged; m_lookChanged = false; return v; }
     bool fetchNodeDetail(size_t index);
     bool sendCommand(size_t nodeIndex, int pin, int value);
 
@@ -63,6 +67,7 @@ private:
     String m_lastError;
     String m_gatewayId;
     String m_gatewayName;
+    bool m_lookChanged = false;
     DataCallback m_nodesCb;
     DataCallback m_detailCb;
     DataCallback m_errorCb;
