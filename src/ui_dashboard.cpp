@@ -28,6 +28,7 @@ struct NodeCapability {
   String type;
   int pin;
   int value;
+  String display;
 };
 
 struct DeviceNode {
@@ -71,7 +72,12 @@ static void merge_telemetry() {
   auto& gw = GatewayDiscovery::instance();
   for (auto& node : discovered_nodes) {
     const NodeTelemetry* t = gw.getNodeTelemetry(node.deviceIdNum);
-    if (t) {
+    // The quick radio telemetry carries ONE value, so it is only right for a node with a
+    // single input; nodes with several inputs get each pin's own value from the hub.
+    int inputs = 0;
+    for (auto& cap : node.capabilities)
+      if (cap.type == "analogInput" || cap.type == "digitalInput") inputs++;
+    if (t && inputs == 1) {
       for (auto& cap : node.capabilities) {
         if (cap.type == "analogInput" || cap.type == "digitalInput") {
           cap.value = t->value;
@@ -102,7 +108,7 @@ static void sync_telemetry_devices() {
     dn.name = "Device " + String(devId);
     dn.deviceId = String(devId);
     dn.deviceIdNum = devId;
-    dn.capabilities.push_back({"Status", "digitalInput", 0, tel.value});
+    dn.capabilities.push_back({"Status", "digitalInput", 0, tel.value, ""});
     discovered_nodes.push_back(dn);
     added = true;
   }
@@ -118,17 +124,31 @@ static void refresh_ui() {
 
   if (discovered_nodes.empty()) {
     lv_obj_clear_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
+    // "Select a node" only makes sense once there are nodes to select.
+    lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
+    bool waiting = true;  // show the spinner while we are still trying
     if (dm.hasError()) {
-      lv_label_set_text(empty_label, ("Error: " + dm.lastError()).c_str());
+      String err = dm.lastError();
+      Serial.printf("[UI] empty list: %s\n", err.c_str());
+      if (err == "Hub offline") {
+        lv_label_set_text(empty_label, "Hub offline\nCan't reach the hub.\nTrying again...");
+      } else if (err == "No gateway present") {
+        lv_label_set_text(empty_label, "No gateway present");
+        waiting = false;
+      } else {
+        lv_label_set_text(empty_label, ("Error: " + err).c_str());
+        waiting = false;
+      }
     } else if (dm.isInitialized()) {
       lv_label_set_text(empty_label,
                         "No nodes on this display yet.\nAssign nodes to it in the app\nor on the website.");
+      waiting = false;
     } else {
       lv_label_set_text(empty_label,
                         "No nodes discovered.\nScanning hardware...");
     }
+    if (waiting) lv_obj_clear_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
@@ -206,8 +226,9 @@ static void poll_data_cb(lv_timer_t* t) {
       auto& localNode = discovered_nodes[active_node_index];
       for (const auto& apiCap : apiNode->capabilities) {
         for (auto& localCap : localNode.capabilities) {
-          if (localCap.pin == apiCap.pin && localCap.value != apiCap.value) {
-            localCap.value = apiCap.value;
+          if (localCap.pin == apiCap.pin && localCap.type == apiCap.type) {
+            localCap.display = apiCap.display;
+            if (localCap.value != apiCap.value) localCap.value = apiCap.value;
             break;
           }
         }
@@ -489,7 +510,7 @@ static void populate_capability_controls(size_t node_idx) {
     } else if (cap.type == "analogInput") {
       ctrl = lv_bar_create(row);
       lv_obj_set_size(ctrl, 60, 6);
-      lv_bar_set_range(ctrl, 0, 255);
+      lv_bar_set_range(ctrl, 0, 4095);
       lv_bar_set_value(ctrl, cap.value, LV_ANIM_OFF);
       lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_track()), LV_PART_MAIN);
       lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_muted()),
@@ -502,6 +523,15 @@ static void populate_capability_controls(size_t node_idx) {
       lv_obj_set_style_bg_color(
           ctrl, cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track()),
           LV_PART_MAIN);
+    }
+
+    else if (cap.type == "dht" || cap.type == "ld2410" || cap.type == "ds3231" ||
+             cap.type == "neopixel" || cap.type == "buzzer") {
+      // Sensors and effects: show the hub's short state text ("23.4°C  61%", "Comet"…)
+      ctrl = lv_label_create(row);
+      lv_label_set_text(ctrl, cap.display.isEmpty() ? "--" : cap.display.c_str());
+      lv_obj_set_style_text_font(ctrl, &lv_font_montserrat_10, LV_PART_MAIN);
+      lv_obj_set_style_text_color(ctrl, lv_color_hex(th_accent()), LV_PART_MAIN);
     }
 
     cap_widgets.push_back({ctrl, cap.pin, cap.type});
@@ -558,6 +588,10 @@ static void update_capability_values(size_t node_idx) {
       if (cur != cap.value) {
         lv_bar_set_value(w.control, cap.value, LV_ANIM_OFF);
       }
+    } else if (w.type == "dht" || w.type == "ld2410" || w.type == "ds3231" ||
+               w.type == "neopixel" || w.type == "buzzer") {
+      const char* t = cap.display.isEmpty() ? "--" : cap.display.c_str();
+      if (strcmp(lv_label_get_text(w.control), t) != 0) lv_label_set_text(w.control, t);
     } else if (w.type == "digitalInput") {
       lv_color_t c =
           cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track());
@@ -633,7 +667,7 @@ static void sync_nodes_from_data_manager() {
     dn.deviceId = src->deviceId;
     dn.deviceIdNum = src->deviceIdNum;
     for (const auto& cap : src->capabilities) {
-      dn.capabilities.push_back({cap.name, cap.type, cap.pin, cap.value});
+      dn.capabilities.push_back({cap.name, cap.type, cap.pin, cap.value, cap.display});
     }
     discovered_nodes.push_back(dn);
   }

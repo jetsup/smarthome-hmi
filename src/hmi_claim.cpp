@@ -21,7 +21,7 @@ ClaimCode hmiRequestClaimCode() {
     return out;
   }
   out.ok = true;
-  out.code = String(doc["code"].as<const char*>());
+  out.code = String((doc["code"] | ""));
   out.secret = String(doc["secret"] | "");
   out.expiresIn = doc["expiresIn"] | 600;
   return out;

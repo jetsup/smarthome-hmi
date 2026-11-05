@@ -6,6 +6,11 @@
 #include "network_manager.hpp"
 #include "preferences_manager.hpp"
 
+// code <= 0 means the request never got an answer (hub down / unreachable).
+static String httpErrorText(int code) {
+  return code <= 0 ? String("Hub offline") : "HTTP " + String(code);
+}
+
 DataManager& DataManager::instance() {
   static DataManager inst;
   return inst;
@@ -17,7 +22,7 @@ bool DataManager::fetchGateways() {
   int code = NetworkManager::instance().httpGet("/api/hmi/gateways", resp);
   if (code != 200) {
     m_error = true;
-    m_lastError = "HTTP " + String(code);
+    m_lastError = httpErrorText(code);
     if (m_errorCb) m_errorCb();
     return false;
   }
@@ -34,12 +39,12 @@ bool DataManager::fetchGateways() {
   JsonArray arr = doc.as<JsonArray>();
   if (arr.size() == 0) {
     m_error = true;
-    m_lastError = "No gateways found";
+    m_lastError = "No gateway present";
     if (m_errorCb) m_errorCb();
     return false;
   }
 
-  m_gatewayId = String(arr[0]["id"].as<const char*>());
+  m_gatewayId = String((arr[0]["id"] | ""));
   return !m_gatewayId.isEmpty();
 }
 
@@ -52,8 +57,8 @@ String DataManager::findHexGatewayId(const String& name) {
   DeserializationError err = deserializeJson(doc, resp);
   if (err || !doc.is<JsonArray>()) return "";
   for (JsonObject gw : doc.as<JsonArray>()) {
-    String gwName = gw["name"].as<const char*>();
-    String gwId = gw["id"].as<const char*>();
+    String gwName = (gw["name"] | "");
+    String gwId = (gw["id"] | "");
     if (gwName.startsWith(name) || name.startsWith(gwName)) {
       return gwId;
     }
@@ -71,8 +76,20 @@ bool DataManager::refreshGatewayName() {
     String th = ap["theme"] | "dark";
     String ac = ap["accent"] | "00A8E8";
     uint32_t accent = strtoul(ac.c_str(), nullptr, 16);
-    if (theme::update(th == "light", accent, ap["brightness"] | 100,
-                      ap["statusLed"] | true))
+    String bgs = ap["background"] | "";
+    String lcs = ap["ledColor"] | "";
+    ThemeUpdate u;
+    u.light = th == "light";
+    u.accent = accent;
+    u.brightness = ap["brightness"] | 100;
+    u.statusLed = ap["statusLed"] | true;
+    u.background = bgs.length() == 6 ? (int32_t)strtoul(bgs.c_str(), nullptr, 16) : -1;
+    String mode = ap["ledMode"] | "solid";
+    u.ledMode = mode.c_str();
+    u.ledColor = lcs.length() == 6 ? (int32_t)strtoul(lcs.c_str(), nullptr, 16) : -1;
+    u.ledBrightness = ap["ledBrightness"] | 40;
+    u.ledSpeed = ap["ledSpeed"] | 50;
+    if (theme::update(u))
       m_lookChanged = true;
   }
   String name = doc["name"] | "";
@@ -98,7 +115,7 @@ bool DataManager::fetchNodes() {
     if (m_gatewayId.length() > 10) {
       // Already looks like hex, fail
       m_error = true;
-      m_lastError = "HTTP " + String(code);
+      m_lastError = httpErrorText(code);
       if (m_errorCb) m_errorCb();
       return false;
     }
@@ -106,7 +123,7 @@ bool DataManager::fetchNodes() {
     String hexId = findHexGatewayId(m_gatewayName);
     if (hexId.isEmpty()) {
       m_error = true;
-      m_lastError = "HTTP " + String(code);
+      m_lastError = httpErrorText(code);
       if (m_errorCb) m_errorCb();
       return false;
     }
@@ -118,7 +135,7 @@ bool DataManager::fetchNodes() {
       String cached = PreferencesManager::instance().getCachedNodes();
       if (cached.isEmpty()) {
         m_error = true;
-        m_lastError = "HTTP " + String(code);
+        m_lastError = httpErrorText(code);
         if (m_errorCb) m_errorCb();
         return false;
       }
@@ -205,7 +222,7 @@ bool DataManager::parseNodesResponse(const String& json) {
     NodeInfo node;
     node.deviceIdNum = obj["deviceId"].as<unsigned int>();
     node.deviceId = String(node.deviceIdNum);
-    node.name = obj["name"].as<const char*>();
+    node.name = (obj["name"] | "");
     node.isOnline = obj["isOnline"] | false;
     node.isProvisioned = obj["isProvisioned"] | false;
     node.value = obj["value"] | 0;
@@ -217,11 +234,13 @@ bool DataManager::parseNodesResponse(const String& json) {
                     node.name.c_str(), caps.size());
       for (JsonObject cap : caps) {
         Capability c;
-        c.name = cap["label"].as<const char*>();
-        if (c.name.isEmpty()) c.name = cap["name"].as<const char*>();
-        c.type = cap["type"].as<const char*>();
+        c.name = (cap["label"] | "");
+        if (c.name.isEmpty()) c.name = (cap["name"] | "");
+        c.type = (cap["type"] | "");
+        if (c.name.isEmpty()) c.name = c.type;  // unlabelled module: show its kind
         c.pin = cap["pin"] | -1;
         c.value = cap["value"] | 0;
+        c.display = (cap["display"] | "");
         node.capabilities.push_back(c);
         Serial.printf("[DM]     Cap: name='%s' type='%s' pin=%d value=%d\n",
                       c.name.c_str(), c.type.c_str(), c.pin, c.value);
@@ -257,11 +276,13 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
   Serial.printf("[DM] Parsed %d capabilities from detail\n", caps.size());
 
   for (JsonObject cap : caps) {
-    String capName = cap["label"].as<const char*>();  // Go uses 'label'
-    if (capName.isEmpty()) capName = cap["name"].as<const char*>();  // fallback
-    String capType = cap["type"].as<const char*>();
+    String capName = (cap["label"] | "");  // Go uses 'label'
+    if (capName.isEmpty()) capName = (cap["name"] | "");  // fallback
+    String capType = (cap["type"] | "");
+    if (capName.isEmpty()) capName = capType;
     int capPin = cap["pin"] | -1;
     int capValue = cap["value"] | 0;
+    String capDisplay = (cap["display"] | "");
 
     Serial.printf("[DM]   Cap: name='%s' type='%s' pin=%d value=%d\n",
                   capName.c_str(), capType.c_str(), capPin, capValue);
@@ -270,6 +291,7 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
     for (auto& existing : out.capabilities) {
       if (existing.name == capName && existing.pin == capPin) {
         existing.value = capValue;
+        existing.display = capDisplay;
         existing.type = capType;
         found = true;
         break;
@@ -282,6 +304,7 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
       c.type = capType;
       c.pin = capPin;
       c.value = capValue;
+      c.display = capDisplay;
       out.capabilities.push_back(c);
     }
   }

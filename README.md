@@ -1,3 +1,58 @@
+# smarthome-hmi — SmartHome touch display (Viewe 2.8" 240x320)
+
+Firmware (PlatformIO + LVGL) that turns the Viewe ESP32-S3 2.8" touch board into a wall display for one SmartHome gateway. It joins Wi-Fi, pairs with the hub using a code/QR, shows the nodes assigned to it and controls them. Theme, background, accent, brightness and the onboard RGB LED are changed from the app or web UI.
+
+## Installation & first-time setup
+
+Set up the hub first (`../smarthome-hub/README.md`) and note its LAN IP.
+
+### 1. Prerequisites
+
+- [PlatformIO](https://platformio.org/) CLI or VS Code extension. Board/platform (`espressif32@6.9.0`) and libraries (LVGL 9.4, GFX Library, SensorLib, WS2812FX, ArduinoJson, NimBLE) download on the first build, which takes several minutes.
+- USB-C cable to the board's native USB port (appears as `/dev/ttyACM*`); Linux: `sudo usermod -aG dialout $USER`.
+
+### 2. ⚠️ Set the hub address (required)
+
+Either edit `include/config.hpp`, or add build flags to `platformio.ini`:
+
+```ini
+build_flags =
+    -D LV_USE_OBJ_NAME=1
+    -D LV_CONF_INCLUDE_SIMPLE
+    -I include
+    -D HMI_HUB_HOST=\"192.168.1.50\"   ; <-- YOUR hub's IP address
+    ; -D HMI_HUB_PORT=9000             ; only if you changed SERVER_PORT
+```
+
+Also update the fallback `m_hubHost` in `include/network_manager.hpp` to the same IP. The shipped `192.168.100.100` is the author's network. `HMI_WIFI_SSID`/`HMI_WIFI_PASSWORD` in `config.hpp` are placeholders and are **not** used: Wi-Fi is entered on the device (below).
+
+### 3. Build & flash
+
+```bash
+pio run
+pio run -t upload --upload-port /dev/ttyACM0
+pio device monitor -b 115200      # serial log (the board's UART0 logs also appear on pins IO43/IO44)
+```
+
+Re-flashing does **not** erase saved Wi-Fi or pairing (they live in NVS/Wi-Fi storage). To wipe the board fully: `pio run -t erase`.
+
+### 4. Join Wi-Fi and pair
+
+1. First boot shows the boot animation, then, with no saved Wi-Fi, the **Wi-Fi setup** screen. Use the app (Menu → **Set up HMI Wi-Fi**) or connect a phone to the access point **`SmartHome-HMI-XXXX`** and open `http://192.168.4.1` to enter your **2.4 GHz** Wi-Fi.
+2. Once online it asks the hub for a pairing code and shows a **6-digit code and QR**.
+3. In the app (Menu → **Pair a display**, scan the QR) or the web UI (Displays → type the code) claim it and choose its gateway; then pick which nodes it shows. A node can be on only one display.
+4. Appearance (theme, background colour, accent, brightness, RGB LED pattern) is changed under the display's **Appearance** page; the display applies it within about 5 seconds.
+
+Removing the display from **Displays** in the app/web UI unpairs it at once; it then asks for a new code.
+
+## Troubleshooting
+
+- *Stuck on the Wi-Fi screen*: the SSID must be 2.4 GHz and in range; the display scans first, then connects (up to ~30 s).
+- *Cannot reach the hub*: check the IP above, that the hub is running and its firewall allows port 9000.
+- *Serial log*: look for `[NET]`, `[DM]`, `[UI]` lines.
+
+---
+
 # Viewe 2.8" 240x320 Board
 
 ## Overview

@@ -291,7 +291,7 @@ void WifiProvisioner::handleScanRequest() {
       if (s.isEmpty() || s == m_apSsid) continue;
       bool dup = false;
       for (JsonObject o : arr)
-        if (s == o["ssid"].as<const char*>()) dup = true;
+        if (s == (o["ssid"] | "")) dup = true;
       if (dup) continue;
       JsonObject o = arr.add<JsonObject>();
       o["ssid"] = s;

@@ -1,10 +1,12 @@
 #include "theme.hpp"
+#include <WiFi.h>
 #include "ui_managers.hpp"
 
 #include "config.hpp"
 #include "data_manager.hpp"
 #include "gateway_discovery.hpp"
 #include "network_manager.hpp"
+#include "wifi_provisioner.hpp"
 #include "pairing_client.hpp"
 #include "preferences_manager.hpp"
 #include "ui_dashboard.hpp"
@@ -101,6 +103,14 @@ static void splash_data_cb(lv_timer_t* timer) {
     }
     if (msg.length()) update_splash_status(msg.c_str());
   }
+  static uint32_t lastLog = 0;
+  if (millis() - lastLog > 2000) {
+    lastLog = millis();
+    Serial.printf("[UI] splash: wifi=%d paired=%d auto=%d status=%d\n",
+                  NetworkManager::instance().isWiFiConnected(),
+                  PreferencesManager::instance().hasPairedGateway(),
+                  (int)NetworkManager::instance().autoState(), (int)WiFi.status());
+  }
   if (NetworkManager::instance().isWiFiConnected()) {
     auto& prefs = PreferencesManager::instance();
 
@@ -122,6 +132,21 @@ static void splash_data_cb(lv_timer_t* timer) {
 }
 
 static void splash_timeout_cb(lv_timer_t* timer) {
+  // The saved network may still be being found / joined (a scan can miss it once and
+  // the join itself can take a couple of tries): keep waiting while that is going on.
+  static int extensions = 0;
+  {
+    auto st = NetworkManager::instance().autoState();
+    bool working = st == NetworkManager::AutoState::Scanning || st == NetworkManager::AutoState::Connecting ||
+                   st == NetworkManager::AutoState::NoneInRange;
+    if (!NetworkManager::instance().isWiFiConnected() && working && PreferencesManager::instance().hasWifiCredentials() && extensions < 4) {
+      extensions++;
+      lv_timer_set_period(timer, 10000);
+      Serial.printf("[UI] still looking for saved Wi-Fi (extension %d)\n", extensions);
+      return;
+    }
+  }
+
   // This callback IS splash_timer. Forget the handle first so the trigger_*
   // helpers don't delete the running timer a second time (use-after-free).
   if (timer == splash_timer) splash_timer = nullptr;
@@ -130,6 +155,8 @@ static void splash_timeout_cb(lv_timer_t* timer) {
     data_load_timer = nullptr;
   }
   auto& prefs = PreferencesManager::instance();
+  Serial.printf("[UI] splash timeout: wifi=%d paired=%d -> %s\n", NetworkManager::instance().isWiFiConnected(),
+                prefs.hasPairedGateway(), NetworkManager::instance().isWiFiConnected() ? "dashboard/scan" : "WI-FI SCREEN");
 
   if (NetworkManager::instance().isWiFiConnected()) {
     if (prefs.hasPairedGateway()) {
@@ -175,7 +202,20 @@ void trigger_splash_sequence() {
   splash_timer = lv_timer_create(splash_timeout_cb, haveCreds ? 20000 : 1200, nullptr);
 }
 
+// The Wi-Fi screen is only for when nothing saved can be joined. If the automatic
+// connection succeeds in the background (late scan, router just booted…), carry on.
+static lv_timer_t* wifi_watch_timer = nullptr;
+static void wifi_watch_cb(lv_timer_t* t) {
+  if (!NetworkManager::instance().isWiFiConnected()) return;
+  wifi_watch_timer = nullptr;
+  lv_timer_delete(t);
+  WifiProvisioner::instance().stop();
+  Serial.println("[UI] Wi-Fi joined in the background - leaving the Wi-Fi screen");
+  trigger_after_wifi_connected();
+}
+
 void trigger_wifi_settings() {
+  if (wifi_watch_timer == nullptr) wifi_watch_timer = lv_timer_create(wifi_watch_cb, 1000, nullptr);
   cleanup_gateway_scan_screen();
   if (data_load_timer != nullptr) {
     lv_timer_delete(data_load_timer);
@@ -193,6 +233,10 @@ void trigger_wifi_settings() {
 }
 
 void trigger_after_wifi_connected() {
+  if (wifi_watch_timer != nullptr) {
+    lv_timer_delete(wifi_watch_timer);
+    wifi_watch_timer = nullptr;
+  }
   cleanup_wifi_screen();
   cleanup_wifi_setup_screen();
   lv_obj_t* old = lv_screen_active();

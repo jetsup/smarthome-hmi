@@ -8,6 +8,7 @@ struct Capability {
     String type;
     int pin;
     int value;
+    String display;   // short state text for sensors / patterns (from the hub)
 };
 
 struct NodeInfo {
