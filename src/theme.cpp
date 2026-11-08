@@ -6,6 +6,8 @@
 
 #include "display.hpp"
 #include "network_manager.hpp"
+#include "ui_pairing.hpp"
+#include "ui_screens.hpp"
 
 extern LGFX tft;
 extern WS2812FX ws2812fx;
@@ -121,6 +123,12 @@ void theme::wake() {
 }
 
 void theme::tickPower() {
+  // Never sleep while something is loading: boot / splash screen, connecting,
+  // or the "please wait" overlay. The idle countdown starts once it is done.
+  if (splash_screen != nullptr || loading_dialog_visible()) {
+    wake();
+    return;
+  }
   if (g_theme.sleepAfter == 0) {
     if (g_asleep) wake();
     return;

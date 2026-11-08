@@ -49,6 +49,8 @@ void show_loading_dialog(const char* message) {
     lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -12);
 }
 
+bool loading_dialog_visible() { return loading_dialog != nullptr; }
+
 void hide_loading_dialog() {
     if (loading_dialog) {
         lv_obj_delete(loading_dialog);

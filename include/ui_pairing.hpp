@@ -6,3 +6,6 @@ void show_loading_dialog(const char* message);
 void hide_loading_dialog();
 void show_error_dialog(const char* message);
 void show_pairing_result_dialog(bool success, const char* message);
+
+// True while the "please wait" overlay is up.
+bool loading_dialog_visible();
