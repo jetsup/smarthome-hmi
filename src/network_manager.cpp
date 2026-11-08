@@ -2,6 +2,7 @@
 #include "preferences_manager.hpp"
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <LittleFS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -161,6 +162,28 @@ int NetworkManager::httpGet(const String& path, String& response) const {
     }
     http.end();
     return code;
+}
+
+bool NetworkManager::httpGetToFile(const String& path, const char* fsPath, size_t expectedBytes) const {
+    if (!isWiFiConnected()) return false;
+    WiFiClient client;
+    HTTPClient http;
+    http.begin(client, "http://" + m_hubHost + ":" + String(m_hubPort) + path);
+    http.setConnectTimeout(kHttpTimeoutMs);
+    http.setTimeout(15000);
+    if (!m_token.isEmpty()) http.addHeader("Authorization", "Bearer " + m_token);
+    bool ok = false;
+    if (http.GET() == 200) {
+        File f = LittleFS.open(fsPath, "w");
+        if (f) {
+            int n = http.writeToStream(&f);
+            f.close();
+            ok = n > 0 && (expectedBytes == 0 || (size_t)n == expectedBytes);
+            if (!ok) LittleFS.remove(fsPath);
+        }
+    }
+    http.end();
+    return ok;
 }
 
 int NetworkManager::httpPost(const String& path, const String& body,

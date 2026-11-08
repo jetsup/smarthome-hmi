@@ -1,5 +1,6 @@
 #include "theme.hpp"
 #include "data_manager.hpp"
+#include "lockscreen.hpp"
 
 #include <ArduinoJson.h>
 
@@ -93,6 +94,7 @@ bool DataManager::refreshGatewayName() {
     u.ledSleepOff = ap["ledSleepOff"] | true;
     if (theme::update(u))
       m_lookChanged = true;
+    lockscreen::onHubBackgroundVersion(ap["lockBg"] | 0);
   }
   String name = doc["name"] | "";
   if (name.isEmpty() || name == m_gatewayName) return false;
@@ -243,6 +245,7 @@ bool DataManager::parseNodesResponse(const String& json) {
         c.pin = cap["pin"] | -1;
         c.value = cap["value"] | 0;
         c.display = (cap["display"] | "");
+        c.symbol = (cap["symbol"] | "");
         node.capabilities.push_back(c);
         Serial.printf("[DM]     Cap: name='%s' type='%s' pin=%d value=%d\n",
                       c.name.c_str(), c.type.c_str(), c.pin, c.value);
@@ -285,6 +288,7 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
     int capPin = cap["pin"] | -1;
     int capValue = cap["value"] | 0;
     String capDisplay = (cap["display"] | "");
+    String capSymbol = (cap["symbol"] | "");
 
     Serial.printf("[DM]   Cap: name='%s' type='%s' pin=%d value=%d\n",
                   capName.c_str(), capType.c_str(), capPin, capValue);
@@ -294,6 +298,7 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
       if (existing.name == capName && existing.pin == capPin) {
         existing.value = capValue;
         existing.display = capDisplay;
+        existing.symbol = capSymbol;
         existing.type = capType;
         found = true;
         break;
@@ -307,6 +312,7 @@ bool DataManager::parseDetailResponse(const String& json, NodeInfo& out) {
       c.pin = capPin;
       c.value = capValue;
       c.display = capDisplay;
+      c.symbol = capSymbol;
       out.capabilities.push_back(c);
     }
   }

@@ -1,10 +1,12 @@
 #include "gateway_discovery.hpp"
+#include "hmi_clock.hpp"
 
 #include <WiFi.h>
 #include <esp_now.h>
 
 #define MSG_TELEMETRY 1
 #define MSG_GATEWAY_ANNOUNCE 7
+#define MSG_TIME 11
 #define MSG_PIN_CMD 6
 
 struct __attribute__((packed)) EspNowPinCmd {
@@ -136,6 +138,17 @@ void GatewayDiscovery::handleEspNowPacket(const uint8_t* mac,
     if (m_nodeTelemetry.size() <= 64) {
       Serial.printf("[GW] Telemetry: deviceId=%u value=%u\n", deviceId, value);
     }
+    return;
+  }
+
+  // Shared clock from the gateway (RTC / internet / hub): 0xAA 11 dev[4] len=5 epoch[4] source xor
+  if (msgType == MSG_TIME) {
+    if (len < 13 || data[6] != 5) return;
+    uint8_t calc = 0;
+    for (int i = 0; i < 12; i++) calc ^= data[i];
+    if (calc != data[12]) return;
+    uint32_t epoch = (uint32_t)data[7] | ((uint32_t)data[8] << 8) | ((uint32_t)data[9] << 16) | ((uint32_t)data[10] << 24);
+    hmiclock::setFromGateway(epoch);
     return;
   }
 

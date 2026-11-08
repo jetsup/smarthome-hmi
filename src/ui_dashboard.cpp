@@ -7,6 +7,9 @@
 
 #include "data_manager.hpp"
 #include "gateway_discovery.hpp"
+#include "assets.hpp"
+#include "hmi_clock.hpp"
+#include "lockscreen.hpp"
 #include "network_manager.hpp"
 #include "preferences_manager.hpp"
 #include "ui_screens.hpp"
@@ -14,12 +17,16 @@
 extern WS2812FX ws2812fx;
 
 // UI layout references
-static lv_obj_t* sidebar_panel;
-static lv_obj_t* nodes_main_panel;
+static lv_obj_t* top_bar;
+static lv_obj_t* top_title;
+static lv_obj_t* top_time;
+static lv_obj_t* top_dot;
+static lv_obj_t* chips_panel;
+static lv_obj_t* nodes_main_panel;  // the tile grid
 static lv_obj_t* empty_label;
 static lv_obj_t* empty_spinner;
-static lv_obj_t* placeholder_lbl;
 static lv_timer_t* poll_timer = nullptr;
+static lv_timer_t* clock_timer = nullptr;
 static bool dashboard_active = false;
 static bool gateway_online = false;
 
@@ -29,6 +36,7 @@ struct NodeCapability {
   int pin;
   int value;
   String display;
+  String symbol;
 };
 
 struct DeviceNode {
@@ -38,17 +46,30 @@ struct DeviceNode {
   std::vector<NodeCapability> capabilities;
 };
 
-// Track widgets per capability for in-place updates (no flicker)
-struct CapWidget {
-  lv_obj_t* control;  // switch, slider, bar, or LED dot
+// One tile of the grid. A module can make one tile (a switch) or several (a DHT: temperature
+// and humidity); tiles are updated in place so nothing flickers.
+enum TileKind { T_SWITCH, T_SLIDER, T_GAUGE, T_BOOL, T_TEXT };
+struct Tile {
+  TileKind kind;
+  int cap;        // index into the node's capabilities
+  int part;       // which value of the module (0 / 1 for a DHT)
   int pin;
   String type;
+  String label;
+  const lv_image_dsc_t* icon;
+  uint32_t tint;
+  float vmin, vmax;
+  lv_obj_t* root;
+  lv_obj_t* badge;
+  lv_obj_t* iconObj;
+  lv_obj_t* value;   // big text
+  lv_obj_t* ctrl;    // switch / slider / arc
 };
 
 static std::vector<DeviceNode> discovered_nodes;
 static size_t active_node_index = 0;
 static std::vector<lv_obj_t*> sidebar_buttons;
-static std::vector<CapWidget> cap_widgets;
+static std::vector<Tile> tiles;
 static size_t rendered_node =
     SIZE_MAX;  // which node's widgets are currently built
 
@@ -63,6 +84,7 @@ static bool is_node_online(size_t node_idx) {
 static void render_node_sidebar();
 static void populate_capability_controls(size_t node_idx);
 static void update_capability_values(size_t node_idx);
+static void leave_dashboard();
 static void node_select_cb(lv_event_t* e);
 static void digital_out_toggle_cb(lv_event_t* e);
 static void analog_out_slider_cb(lv_event_t* e);
@@ -77,7 +99,8 @@ static void merge_telemetry() {
     int inputs = 0;
     for (auto& cap : node.capabilities)
       if (cap.type == "analogInput" || cap.type == "digitalInput") inputs++;
-    if (t && inputs == 1) {
+    // (a node with several modules reports one number for the lot: the hub's per-module values are right)
+    if (t && inputs == 1 && node.capabilities.size() == 1) {
       for (auto& cap : node.capabilities) {
         if (cap.type == "analogInput" || cap.type == "digitalInput") {
           cap.value = t->value;
@@ -108,7 +131,7 @@ static void sync_telemetry_devices() {
     dn.name = "Device " + String(devId);
     dn.deviceId = String(devId);
     dn.deviceIdNum = devId;
-    dn.capabilities.push_back({"Status", "digitalInput", 0, tel.value, ""});
+    dn.capabilities.push_back({"Status", "digitalInput", 0, tel.value, "", ""});
     discovered_nodes.push_back(dn);
     added = true;
   }
@@ -118,14 +141,266 @@ static void sync_telemetry_devices() {
   }
 }
 
+// ── look ────────────────────────────────────────────────────────────────────────────────
+static uint32_t tint_for(const String& sym) {
+  if (sym == "thermometer") return 0xF0883E;
+  if (sym == "flame") return 0xF85149;
+  if (sym == "droplet" || sym == "waves" || sym == "cloudrain") return 0x4AA3FF;
+  if (sym == "radar" || sym == "eye") return 0xA371F7;
+  if (sym == "gauge" || sym == "leaf") return 0x3FB950;
+  if (sym == "sun" || sym == "lightbulb" || sym == "bell") return 0xE3B341;
+  if (sym == "clock") return 0x58A6FF;
+  return th_accent();
+}
+
+static void style_on(Tile& t, bool on, bool online) {
+  if (!t.root) return;
+  uint32_t panel = th_panel();
+  lv_obj_set_style_bg_color(t.root, lv_color_hex(on ? th_mix(panel, t.tint, 16) : panel), LV_PART_MAIN);
+  lv_obj_set_style_border_color(t.root, lv_color_hex(on ? th_mix(panel, t.tint, 55) : th_surface()), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(t.badge, lv_color_hex(on ? t.tint : th_mix(panel, t.tint, 22)), LV_PART_MAIN);
+  lv_obj_set_style_image_recolor(t.iconObj, lv_color_hex(on ? 0xFFFFFF : t.tint), LV_PART_MAIN);
+  lv_obj_set_style_opa(t.root, online ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
+}
+
+// All the numbers in a hub status text: "25.9°C  60%" -> {25.9, 60}
+static int numbers_in(const String& s, float* out, int max) {
+  int n = 0;
+  const char* p = s.c_str();
+  while (*p && n < max) {
+    if ((*p >= '0' && *p <= '9') || (*p == '-' && p[1] >= '0' && p[1] <= '9')) {
+      char* end;
+      out[n++] = strtof(p, &end);
+      p = end;
+    } else {
+      p++;
+    }
+  }
+  return n;
+}
+
+static void set_label(lv_obj_t* l, const char* t) {
+  if (l && strcmp(lv_label_get_text(l), t) != 0) lv_label_set_text(l, t);
+}
+
+// Put a module's current value on its tile.
+static void update_tile(Tile& t, const NodeCapability& cap, bool online) {
+  char buf[24];
+  bool on = false;
+  switch (t.kind) {
+    case T_SWITCH: {
+      on = cap.value > 0;
+      if (on != lv_obj_has_state(t.ctrl, LV_STATE_CHECKED)) {
+        if (on) lv_obj_add_state(t.ctrl, LV_STATE_CHECKED); else lv_obj_clear_state(t.ctrl, LV_STATE_CHECKED);
+      }
+      set_label(t.value, on ? "On" : "Off");
+      break;
+    }
+    case T_SLIDER: {
+      on = cap.value > 0;
+      if (lv_slider_get_value(t.ctrl) != cap.value) lv_slider_set_value(t.ctrl, cap.value, LV_ANIM_OFF);
+      snprintf(buf, sizeof(buf), "%d%%", cap.value * 100 / 255);
+      set_label(t.value, buf);
+      break;
+    }
+    case T_GAUGE: {
+      float v = 0;
+      bool have = true;
+      if (t.type == "dht") {
+        float n[4];
+        int c = numbers_in(cap.display, n, 4);
+        have = c > t.part;
+        if (have) v = n[t.part];
+      } else {
+        v = cap.value;
+      }
+      float frac = have && t.vmax > t.vmin ? (v - t.vmin) / (t.vmax - t.vmin) : 0;
+      frac = frac < 0 ? 0 : (frac > 1 ? 1 : frac);
+      lv_arc_set_value(t.ctrl, (int)(frac * 1000));
+      if (!have) snprintf(buf, sizeof(buf), "--");
+      else if (v == (int)v || fabsf(v) >= 100) snprintf(buf, sizeof(buf), "%d", (int)roundf(v));
+      else snprintf(buf, sizeof(buf), "%.1f", v);
+      set_label(t.value, buf);
+      on = have;
+      break;
+    }
+    case T_BOOL: {
+      if (t.type == "ld2410") {
+        on = !cap.display.isEmpty() && cap.display != "Clear";
+        set_label(t.value, cap.display.isEmpty() ? "--" : cap.display.c_str());
+      } else {
+        on = cap.value > 0;
+        set_label(t.value, on ? "Active" : "Inactive");
+      }
+      if (on != lv_obj_has_state(t.ctrl, LV_STATE_CHECKED)) {
+        if (on) lv_obj_add_state(t.ctrl, LV_STATE_CHECKED); else lv_obj_clear_state(t.ctrl, LV_STATE_CHECKED);
+      }
+      break;
+    }
+    case T_TEXT: {
+      on = t.type == "neopixel" ? (!cap.display.isEmpty() && cap.display != "Off") : false;
+      set_label(t.value, cap.display.isEmpty() ? "--" : cap.display.c_str());
+      break;
+    }
+  }
+  if (t.ctrl && (t.kind == T_SWITCH || t.kind == T_SLIDER)) {
+    if (online) lv_obj_clear_state(t.ctrl, LV_STATE_DISABLED);
+    else lv_obj_add_state(t.ctrl, LV_STATE_DISABLED);
+  }
+  style_on(t, on, online);
+}
+
+static lv_obj_t* tile_label(lv_obj_t* parent, const char* text, const lv_font_t* font, uint32_t color, int x, int y, int w,
+                            bool scroll = false) {
+  lv_obj_t* l = lv_label_create(parent);
+  lv_label_set_text(l, text);
+  lv_label_set_long_mode(l, scroll ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_DOT);
+  lv_obj_set_width(l, w);
+  lv_obj_set_style_text_font(l, font, LV_PART_MAIN);
+  lv_obj_set_style_text_color(l, lv_color_hex(color), LV_PART_MAIN);
+  lv_obj_set_pos(l, x, y);
+  return l;
+}
+
+static void build_tile(const NodeCapability& cap, int capIdx, int part, TileKind kind, const String& label,
+                       const String& symbol, float vmin, float vmax, bool online) {
+  Tile t{};
+  t.kind = kind;
+  t.cap = capIdx;
+  t.part = part;
+  t.pin = cap.pin;
+  t.type = cap.type;
+  t.label = label;
+  String sym = symbol.isEmpty() ? String(defaultSymbolFor(cap.type.c_str())) : symbol;
+  t.icon = symbolImage(sym.c_str());
+  t.tint = tint_for(sym);
+  t.vmin = vmin;
+  t.vmax = vmax;
+
+  const int W = 148, H = 84;
+  t.root = lv_obj_create(nodes_main_panel);
+  lv_obj_set_size(t.root, W, H);
+  lv_obj_remove_flag(t.root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_radius(t.root, 16, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(t.root, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_width(t.root, 1, LV_PART_MAIN);
+  lv_obj_set_style_shadow_width(t.root, 0, LV_PART_MAIN);
+
+  t.badge = lv_obj_create(t.root);
+  lv_obj_remove_flag(t.badge, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  lv_obj_set_size(t.badge, 36, 36);
+  lv_obj_set_pos(t.badge, 10, 8);
+  lv_obj_set_style_radius(t.badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_set_style_border_width(t.badge, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(t.badge, 0, LV_PART_MAIN);
+  t.iconObj = lv_image_create(t.badge);
+  lv_image_set_src(t.iconObj, t.icon);
+  lv_obj_set_style_image_recolor_opa(t.iconObj, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_center(t.iconObj);
+
+  uintptr_t ctx = (uintptr_t)capIdx;
+  switch (kind) {
+    case T_SWITCH:
+    case T_BOOL: {
+      t.ctrl = lv_switch_create(t.root);
+      lv_obj_set_size(t.ctrl, 38, 22);
+      lv_obj_align(t.ctrl, LV_ALIGN_TOP_RIGHT, -10, 14);
+      lv_obj_set_style_bg_color(t.ctrl, lv_color_hex(t.tint), (lv_style_selector_t)LV_PART_INDICATOR | LV_STATE_CHECKED);
+      if (kind == T_SWITCH) {
+        lv_obj_add_event_cb(t.ctrl, digital_out_toggle_cb, LV_EVENT_VALUE_CHANGED, (void*)ctx);
+      } else {
+        lv_obj_remove_flag(t.ctrl, LV_OBJ_FLAG_CLICKABLE);  // an indicator, not a control
+      }
+      t.value = tile_label(t.root, "--", &lv_font_montserrat_20, th_text(), 10, 44, 128);
+      if (kind == T_BOOL) lv_obj_set_style_text_font(t.value, &lv_font_montserrat_14, LV_PART_MAIN);
+      break;
+    }
+    case T_SLIDER: {
+      t.value = tile_label(t.root, "--", &lv_font_montserrat_20, th_text(), 66, 12, 74);
+      lv_obj_set_style_text_align(t.value, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+      t.ctrl = lv_slider_create(t.root);
+      lv_slider_set_range(t.ctrl, 0, 255);
+      lv_obj_set_size(t.ctrl, 126, 8);
+      lv_obj_set_pos(t.ctrl, 11, 52);
+      lv_obj_set_style_bg_color(t.ctrl, lv_color_hex(th_track()), LV_PART_MAIN);
+      lv_obj_set_style_bg_color(t.ctrl, lv_color_hex(t.tint), LV_PART_INDICATOR);
+      lv_obj_set_style_bg_color(t.ctrl, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+      lv_obj_set_style_pad_all(t.ctrl, 3, LV_PART_KNOB);
+      lv_obj_add_event_cb(t.ctrl, analog_out_slider_cb, LV_EVENT_RELEASED, (void*)ctx);
+      lv_obj_add_event_cb(t.ctrl, analog_out_slider_cb, LV_EVENT_VALUE_CHANGED, (void*)ctx);
+      break;
+    }
+    case T_GAUGE: {
+      t.ctrl = lv_arc_create(t.root);
+      lv_obj_set_size(t.ctrl, 66, 66);
+      lv_obj_set_pos(t.ctrl, 76, 9);
+      lv_arc_set_rotation(t.ctrl, 135);
+      lv_arc_set_bg_angles(t.ctrl, 0, 270);
+      lv_arc_set_range(t.ctrl, 0, 1000);
+      lv_obj_remove_flag(t.ctrl, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_style_arc_width(t.ctrl, 7, LV_PART_MAIN);
+      lv_obj_set_style_arc_width(t.ctrl, 7, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(t.ctrl, lv_color_hex(th_track()), LV_PART_MAIN);
+      lv_obj_set_style_arc_color(t.ctrl, lv_color_hex(t.tint), LV_PART_INDICATOR);
+      lv_obj_set_style_arc_rounded(t.ctrl, true, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_rounded(t.ctrl, true, LV_PART_MAIN);
+      lv_obj_set_style_opa(t.ctrl, LV_OPA_TRANSP, LV_PART_KNOB);
+      t.value = lv_label_create(t.root);
+      lv_label_set_text(t.value, "--");
+      lv_obj_set_style_text_font(t.value, &lv_font_montserrat_16, LV_PART_MAIN);
+      lv_obj_set_style_text_color(t.value, lv_color_hex(th_text()), LV_PART_MAIN);
+      lv_obj_set_width(t.value, 50);  // fixed width + centred text: the number stays inside the ring
+      lv_obj_set_style_text_align(t.value, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+      lv_obj_align_to(t.value, t.ctrl, LV_ALIGN_CENTER, 0, -3);
+      lv_obj_t* unit = lv_label_create(t.root);
+      lv_label_set_text(unit, cap.type == "dht" ? (part == 0 ? "°C" : "%") : (cap.type == "analogInput" ? "raw" : ""));
+      lv_obj_set_style_text_font(unit, &lv_font_montserrat_10, LV_PART_MAIN);
+      lv_obj_set_style_text_color(unit, lv_color_hex(th_muted()), LV_PART_MAIN);
+      lv_obj_set_width(unit, 50);
+      lv_obj_set_style_text_align(unit, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+      lv_obj_align_to(unit, t.ctrl, LV_ALIGN_CENTER, 0, 13);
+      break;
+    }
+    case T_TEXT: {
+      t.value = tile_label(t.root, "--", &lv_font_montserrat_12, th_text(), 10, 48, 128, true);
+      break;
+    }
+  }
+  if (kind == T_GAUGE) {
+    // beside the ring: wrap onto two lines under the icon instead of being cut or scrolling
+    lv_obj_t* lb = tile_label(t.root, label.c_str(), &lv_font_montserrat_10, th_muted(), 10, 48, 62);
+    lv_obj_set_height(lb, 26);
+  } else {
+    tile_label(t.root, label.c_str(), &lv_font_montserrat_10, th_muted(), 10, 67, 128);
+  }
+  tiles.push_back(t);
+  update_tile(tiles.back(), cap, online);
+}
+
+static void update_top_bar(lv_timer_t*) {
+  if (!dashboard_active || !top_time) return;
+  char b[8];
+  if (hmiclock::valid()) {
+    struct tm t;
+    hmiclock::local(t);
+    if (lockscreen::get().hour24) snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
+    else snprintf(b, sizeof(b), "%d:%02d", (t.tm_hour + 11) % 12 + 1, t.tm_min);
+  } else {
+    snprintf(b, sizeof(b), "--:--");
+  }
+  set_label(top_time, b);
+  lv_obj_set_style_bg_color(top_dot, lv_color_hex(gateway_online ? 0x3FB950 : th_dim()), LV_PART_MAIN);
+}
+
 static void refresh_ui() {
-  if (!dashboard_active || !sidebar_panel || !nodes_main_panel) return;
+  if (!dashboard_active || !chips_panel || !nodes_main_panel) return;
   auto& dm = DataManager::instance();
 
   if (discovered_nodes.empty()) {
+    lv_obj_clean(nodes_main_panel);
+    tiles.clear();
+    rendered_node = SIZE_MAX;
     lv_obj_clear_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
-    // "Select a node" only makes sense once there are nodes to select.
-    lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
     bool waiting = true;  // show the spinner while we are still trying
     if (dm.hasError()) {
       String err = dm.lastError();
@@ -144,15 +419,14 @@ static void refresh_ui() {
                         "No nodes on this display yet.\nAssign nodes to it in the app\nor on the website.");
       waiting = false;
     } else {
-      lv_label_set_text(empty_label,
-                        "No nodes discovered.\nScanning hardware...");
+      lv_label_set_text(empty_label, "No nodes discovered.\nScanning hardware...");
     }
     if (waiting) lv_obj_clear_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (active_node_index >= discovered_nodes.size()) active_node_index = 0;
   }
 
   render_node_sidebar();
@@ -242,11 +516,51 @@ static void poll_data_cb(lv_timer_t* t) {
   render_node_sidebar();
 }
 
+static void leave_dashboard() {
+  dashboard_active = false;
+  top_bar = top_title = top_time = top_dot = nullptr;
+  chips_panel = nullptr;
+  nodes_main_panel = nullptr;
+  empty_label = nullptr;
+  empty_spinner = nullptr;
+  tiles.clear();
+  sidebar_buttons.clear();
+  rendered_node = SIZE_MAX;
+  main_screen = nullptr;
+  if (poll_timer != nullptr) {
+    lv_timer_delete(poll_timer);
+    poll_timer = nullptr;
+  }
+  if (clock_timer != nullptr) {
+    lv_timer_delete(clock_timer);
+    clock_timer = nullptr;
+  }
+}
+
+static lv_obj_t* icon_button(lv_obj_t* parent, const char* symbol, lv_align_t al, int x) {
+  lv_obj_t* b = lv_button_create(parent);
+  lv_obj_set_size(b, 30, 26);
+  lv_obj_align(b, al, x, 0);
+  lv_obj_set_style_bg_color(b, lv_color_hex(th_surface()), LV_PART_MAIN);
+  lv_obj_set_style_radius(b, 13, LV_PART_MAIN);
+  lv_obj_set_style_border_width(b, 0, LV_PART_MAIN);
+  lv_obj_set_style_shadow_width(b, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(b, 0, LV_PART_MAIN);
+  lv_obj_t* im = lv_image_create(b);
+  lv_image_set_src(im, symbolImage(symbol));
+  lv_image_set_scale(im, 200);  // 28 px -> 22 px
+  lv_obj_set_style_image_recolor(im, lv_color_hex(th_muted()), LV_PART_MAIN);
+  lv_obj_set_style_image_recolor_opa(im, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_center(im);
+  return b;
+}
+
 void build_main_dashboard_layout() {
   dashboard_active = true;
 
   // Turn off boot LED animation — dashboard is ready
   theme::applyHardware();  // backlight + status LED as chosen in the app
+  lockscreen::arm();       // from now on the display may lock itself
 
   if (main_screen != nullptr) {
     lv_obj_delete(main_screen);
@@ -255,105 +569,109 @@ void build_main_dashboard_layout() {
 
   main_screen = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(main_screen, lv_color_hex(th_page()), LV_PART_MAIN);
+  lv_obj_remove_flag(main_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-  sidebar_panel = lv_obj_create(main_screen);
-  lv_obj_set_size(sidebar_panel, 95, 200);
-  lv_obj_align(sidebar_panel, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_obj_set_flex_flow(sidebar_panel, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_scroll_dir(sidebar_panel, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(sidebar_panel, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_style_bg_color(sidebar_panel, lv_color_hex(th_panel()),
-                            LV_PART_MAIN);
-  lv_obj_set_style_border_width(sidebar_panel, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(sidebar_panel, lv_color_hex(th_surface()),
-                                LV_PART_MAIN);
-  lv_obj_set_style_pad_all(sidebar_panel, 4, LV_PART_MAIN);
-  lv_obj_set_style_pad_row(sidebar_panel, 6, LV_PART_MAIN);
+  // ── top bar: gateway, clock, lock, settings ──
+  top_bar = lv_obj_create(main_screen);
+  lv_obj_set_size(top_bar, SCREEN_WIDTH, 36);
+  lv_obj_set_pos(top_bar, 0, 0);
+  lv_obj_remove_flag(top_bar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_radius(top_bar, 0, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(top_bar, lv_color_hex(th_panel()), LV_PART_MAIN);
+  lv_obj_set_style_border_width(top_bar, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(top_bar, 0, LV_PART_MAIN);
 
-  lv_obj_t* settings_btn = lv_button_create(main_screen);
-  lv_obj_set_size(settings_btn, 95, 36);
-  lv_obj_align(settings_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  lv_obj_set_style_bg_color(settings_btn, lv_color_hex(th_surface()), LV_PART_MAIN);
-  lv_obj_set_style_radius(settings_btn, 0, LV_PART_MAIN);
-  lv_obj_set_style_border_width(settings_btn, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(settings_btn, lv_color_hex(th_surface()),
-                                LV_PART_MAIN);
-  lv_obj_t* gear_lbl = lv_label_create(settings_btn);
-  lv_label_set_text(gear_lbl, LV_SYMBOL_SETTINGS " Settings");
-  lv_obj_set_style_text_font(gear_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-  lv_obj_set_style_text_color(gear_lbl, lv_color_hex(th_muted()), LV_PART_MAIN);
-  lv_obj_center(gear_lbl);
+  top_dot = lv_obj_create(top_bar);
+  lv_obj_remove_flag(top_dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  lv_obj_set_size(top_dot, 8, 8);
+  lv_obj_set_pos(top_dot, 12, 14);
+  lv_obj_set_style_radius(top_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_set_style_border_width(top_dot, 0, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(top_dot, lv_color_hex(th_dim()), LV_PART_MAIN);
+
+  auto& prefsMgr = PreferencesManager::instance();
+  top_title = lv_label_create(top_bar);
+  lv_label_set_text(top_title, prefsMgr.hasPairedGateway() ? prefsMgr.getPairedGatewayName().c_str() : "Home");
+  lv_label_set_long_mode(top_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(top_title, 120);
+  lv_obj_set_style_text_font(top_title, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(top_title, lv_color_hex(th_text()), LV_PART_MAIN);
+  lv_obj_set_pos(top_title, 28, 9);
+
+  top_time = lv_label_create(top_bar);
+  lv_label_set_text(top_time, "--:--");
+  lv_obj_set_style_text_font(top_time, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(top_time, lv_color_hex(th_accent()), LV_PART_MAIN);
+  lv_obj_align(top_time, LV_ALIGN_RIGHT_MID, -86, 0);
+
+  lv_obj_t* lock_btn = icon_button(top_bar, "shield", LV_ALIGN_RIGHT_MID, -44);
+  lv_obj_add_event_cb(lock_btn, [](lv_event_t*) { lockscreen::lockNow(); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* settings_btn = icon_button(top_bar, "settings", LV_ALIGN_RIGHT_MID, -8);
   lv_obj_add_event_cb(
       settings_btn,
       [](lv_event_t*) {
-        dashboard_active = false;
-        sidebar_panel = nullptr;
-        nodes_main_panel = nullptr;
-        empty_label = nullptr;
-        empty_spinner = nullptr;
-        placeholder_lbl = nullptr;
-        cap_widgets.clear();
-        rendered_node = SIZE_MAX;
-        main_screen = nullptr;
-        if (poll_timer != nullptr) {
-          lv_timer_delete(poll_timer);
-          poll_timer = nullptr;
-        }
+        leave_dashboard();
         build_settings_screen();
       },
       LV_EVENT_CLICKED, nullptr);
 
+  // ── node chips ──
+  chips_panel = lv_obj_create(main_screen);
+  lv_obj_set_size(chips_panel, SCREEN_WIDTH, 34);
+  lv_obj_set_pos(chips_panel, 0, 38);
+  lv_obj_set_flex_flow(chips_panel, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(chips_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_scroll_dir(chips_panel, LV_DIR_HOR);
+  lv_obj_set_scrollbar_mode(chips_panel, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(chips_panel, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(chips_panel, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(chips_panel, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_hor(chips_panel, 8, LV_PART_MAIN);
+  lv_obj_set_style_pad_ver(chips_panel, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_column(chips_panel, 6, LV_PART_MAIN);
+
+  // ── tile grid ──
   nodes_main_panel = lv_obj_create(main_screen);
-  lv_obj_set_size(nodes_main_panel, 225, 240);
-  lv_obj_align(nodes_main_panel, LV_ALIGN_RIGHT_MID, 0, 0);
-  lv_obj_set_flex_flow(nodes_main_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_size(nodes_main_panel, SCREEN_WIDTH, SCREEN_HEIGHT - 74);
+  lv_obj_set_pos(nodes_main_panel, 0, 74);
+  lv_obj_set_flex_flow(nodes_main_panel, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_scroll_dir(nodes_main_panel, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(nodes_main_panel, LV_SCROLLBAR_MODE_AUTO);
-  lv_obj_set_style_bg_color(nodes_main_panel, lv_color_hex(th_page()),
-                            LV_PART_MAIN);
+  lv_obj_set_scrollbar_mode(nodes_main_panel, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_opa(nodes_main_panel, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_border_width(nodes_main_panel, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_all(nodes_main_panel, 6, LV_PART_MAIN);
-  lv_obj_set_style_pad_row(nodes_main_panel, 10, LV_PART_MAIN);
+  lv_obj_set_style_radius(nodes_main_panel, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_hor(nodes_main_panel, 8, LV_PART_MAIN);
+  lv_obj_set_style_pad_top(nodes_main_panel, 2, LV_PART_MAIN);
+  lv_obj_set_style_pad_bottom(nodes_main_panel, 12, LV_PART_MAIN);
+  lv_obj_set_style_pad_row(nodes_main_panel, 8, LV_PART_MAIN);
+  lv_obj_set_style_pad_column(nodes_main_panel, 8, LV_PART_MAIN);
 
   empty_label = lv_label_create(main_screen);
   lv_label_set_text(empty_label, "No nodes discovered.\nScanning hardware...");
-  lv_obj_set_style_text_color(empty_label, lv_color_hex(th_muted()),
-                              LV_PART_MAIN);
-  lv_obj_set_style_text_font(empty_label, &lv_font_montserrat_10, LV_PART_MAIN);
+  lv_obj_set_style_text_color(empty_label, lv_color_hex(th_muted()), LV_PART_MAIN);
+  lv_obj_set_style_text_font(empty_label, &lv_font_montserrat_12, LV_PART_MAIN);
   lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_align(empty_label, LV_ALIGN_CENTER, 10, -20);
+  lv_obj_align(empty_label, LV_ALIGN_CENTER, 0, -10);
   lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
 
   empty_spinner = lv_spinner_create(main_screen);
   lv_obj_set_size(empty_spinner, 30, 30);
-  lv_obj_align(empty_spinner, LV_ALIGN_CENTER, 10, 20);
-  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_accent()),
-                             LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_track()),
-                             LV_PART_MAIN);
+  lv_obj_align(empty_spinner, LV_ALIGN_CENTER, 0, 36);
+  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_accent()), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(empty_spinner, lv_color_hex(th_track()), LV_PART_MAIN);
   lv_obj_set_style_arc_width(empty_spinner, 3, LV_PART_MAIN);
   lv_obj_set_style_arc_width(empty_spinner, 3, LV_PART_INDICATOR);
   lv_obj_add_flag(empty_spinner, LV_OBJ_FLAG_HIDDEN);
 
-  placeholder_lbl = lv_label_create(main_screen);
-  lv_label_set_text(placeholder_lbl, "Select a node\nfrom the sidebar");
-  lv_obj_set_style_text_color(placeholder_lbl, lv_color_hex(th_dim()),
-                              LV_PART_MAIN);
-  lv_obj_set_style_text_font(placeholder_lbl, &lv_font_montserrat_12,
-                             LV_PART_MAIN);
-  lv_obj_set_style_text_align(placeholder_lbl, LV_TEXT_ALIGN_CENTER,
-                              LV_PART_MAIN);
-  lv_obj_align(placeholder_lbl, LV_ALIGN_CENTER, 10, 0);
-  lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
-
-  cap_widgets.clear();
+  tiles.clear();
   rendered_node = SIZE_MAX;
   refresh_ui();
 
-  if (poll_timer != nullptr) {
-    lv_timer_delete(poll_timer);
-  }
+  if (poll_timer != nullptr) lv_timer_delete(poll_timer);
   poll_timer = lv_timer_create(poll_data_cb, 5000, nullptr);
+  if (clock_timer != nullptr) lv_timer_delete(clock_timer);
+  clock_timer = lv_timer_create(update_top_bar, 1000, nullptr);
+  update_top_bar(nullptr);
 
   auto& dm = DataManager::instance();
   dm.onNodesChanged(sync_nodes_from_data_manager);
@@ -370,64 +688,56 @@ void build_main_dashboard_layout() {
   }
 }
 
+// Node chips along the top: tap one to see its tiles.
 static void render_node_sidebar() {
-  if (!dashboard_active || !sidebar_panel) return;
-  lv_obj_clean(sidebar_panel);
+  if (!dashboard_active || !chips_panel) return;
+  lv_obj_clean(chips_panel);
   sidebar_buttons.clear();
-
   if (discovered_nodes.empty()) return;
 
   for (size_t i = 0; i < discovered_nodes.size(); ++i) {
     auto& node = discovered_nodes[i];
     bool online = is_node_online(i);
+    bool sel = i == active_node_index;
 
-    lv_obj_t* btn = lv_button_create(sidebar_panel);
-    lv_obj_set_width(btn, LV_PCT(100));
-    lv_obj_set_height(btn, 48);
-    lv_obj_set_style_radius(btn, 4, LV_PART_MAIN);
+    lv_obj_t* btn = lv_button_create(chips_panel);
+    lv_obj_set_height(btn, 26);
+    lv_obj_set_width(btn, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(btn, 13, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(btn, 11, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(sel ? th_accent() : th_panel()), LV_PART_MAIN);
+    lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn, 6, LV_PART_MAIN);
     lv_obj_add_event_cb(btn, node_select_cb, LV_EVENT_CLICKED, (void*)i);
 
-    if (i == active_node_index) {
-      lv_obj_add_state(btn, LV_STATE_CHECKED);
-      lv_obj_set_style_bg_color(btn, lv_color_hex(th_accent()), LV_PART_MAIN);
-    } else {
-      lv_obj_set_style_bg_color(btn, lv_color_hex(th_surface()), LV_PART_MAIN);
-    }
+    lv_obj_t* dot = lv_obj_create(btn);
+    lv_obj_remove_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_size(dot, 7, 7);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(online ? 0x3FB950 : th_dim()), LV_PART_MAIN);
 
     lv_obj_t* name_lbl = lv_label_create(btn);
-    // Full name; if it is wider than the button it scrolls instead of being cut.
     lv_label_set_text(name_lbl, node.name.c_str());
-    lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_width(name_lbl, LV_PCT(100));
-    lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(
-        name_lbl, lv_color_hex(i == active_node_index ? 0xFFFFFFu : th_text()),
-        LV_PART_MAIN);
-    lv_obj_align(name_lbl, LV_ALIGN_TOP_MID, 0, 4);
-
-    lv_obj_t* status_lbl = lv_label_create(btn);
-    lv_label_set_text(status_lbl, online ? "Online" : "Offline");
-    lv_obj_set_style_text_font(status_lbl, &lv_font_montserrat_10,
-                               LV_PART_MAIN);
-    lv_obj_set_style_text_color(
-        status_lbl, online ? lv_color_hex(0x00FF00) : lv_color_hex(0xF7D3CD),
-        LV_PART_MAIN);
-    lv_obj_align(status_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(name_lbl, lv_color_hex(sel ? 0xFFFFFF : th_text()), LV_PART_MAIN);
 
     sidebar_buttons.push_back(btn);
   }
 }
 
-// Build full capability UI (only called on node switch or full refresh)
+// Build the tiles for a node (only on node switch or when the list changed).
 static void populate_capability_controls(size_t node_idx) {
   if (!dashboard_active || !nodes_main_panel) return;
 
   if (discovered_nodes.empty() || node_idx >= discovered_nodes.size()) {
     lv_obj_clean(nodes_main_panel);
-    cap_widgets.clear();
+    tiles.clear();
     rendered_node = SIZE_MAX;
-    lv_obj_clear_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
@@ -438,108 +748,45 @@ static void populate_capability_controls(size_t node_idx) {
   }
 
   lv_obj_clean(nodes_main_panel);
-  cap_widgets.clear();
-  lv_obj_add_flag(placeholder_lbl, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_scroll_to_y(nodes_main_panel, 0, LV_ANIM_OFF);
+  tiles.clear();
 
   DeviceNode& node = discovered_nodes[node_idx];
   bool online = is_node_online(node_idx);
 
-  lv_obj_t* node_card = lv_obj_create(nodes_main_panel);
-  lv_obj_set_width(node_card, LV_PCT(100));
-  lv_obj_set_height(node_card, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(node_card, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_bg_color(node_card, lv_color_hex(th_panel()), LV_PART_MAIN);
-  lv_obj_set_style_border_width(node_card, 1, LV_PART_MAIN);
-  lv_obj_set_style_border_color(node_card, lv_color_hex(th_surface()),
-                                LV_PART_MAIN);
-  lv_obj_set_style_pad_all(node_card, 6, LV_PART_MAIN);
-  lv_obj_set_style_pad_row(node_card, 8, LV_PART_MAIN);
-
-  lv_obj_t* node_title = lv_label_create(node_card);
-  String title_text = node.name + (online ? "" : " (Offline)");
-  lv_label_set_text(node_title, title_text.c_str());
-  lv_label_set_long_mode(node_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_width(node_title, LV_PCT(100));
-  lv_obj_set_style_text_font(node_title, &lv_font_montserrat_12, LV_PART_MAIN);
-  lv_obj_set_style_text_color(node_title, lv_color_hex(th_accent()), LV_PART_MAIN);
-
+  // Only what can be watched or controlled gets a tile.
   for (size_t ci = 0; ci < node.capabilities.size(); ci++) {
     const auto& cap = node.capabilities[ci];
-
-    lv_obj_t* row = lv_obj_create(node_card);
-    lv_obj_set_size(row, LV_PCT(100), 28);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_left(row, 4, LV_PART_MAIN);
-
-    lv_obj_t* cap_lbl = lv_label_create(row);
-    lv_label_set_text(cap_lbl, cap.name.c_str());
-    lv_label_set_long_mode(cap_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_width(cap_lbl, LV_PCT(42));  // leave room for the control on the right
-    lv_obj_set_style_text_font(cap_lbl, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(cap_lbl, lv_color_hex(th_text()), LV_PART_MAIN);
-
-    uintptr_t context_idx = (uintptr_t)ci;
-    lv_obj_t* ctrl = nullptr;
-
-    if (cap.type == "digitalOutput") {
-      ctrl = lv_switch_create(row);
-      lv_obj_set_size(ctrl, 34, 18);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_accent()),
-                                LV_PART_INDICATOR | LV_STATE_CHECKED);
-      if (cap.value > 0) lv_obj_add_state(ctrl, LV_STATE_CHECKED);
-      if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
-      lv_obj_add_event_cb(ctrl, digital_out_toggle_cb, LV_EVENT_VALUE_CHANGED,
-                          (void*)context_idx);
-    } else if (cap.type == "analogOutput") {
-      ctrl = lv_slider_create(row);
-      lv_obj_set_size(ctrl, 80, 8);
-      lv_slider_set_range(ctrl, 0, 255);
-      lv_slider_set_value(ctrl, cap.value, LV_ANIM_OFF);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_accent()),
-                                LV_PART_INDICATOR);
-      if (!online) lv_obj_add_state(ctrl, LV_STATE_DISABLED);
-      lv_obj_add_event_cb(ctrl, analog_out_slider_cb, LV_EVENT_RELEASED,
-                          (void*)context_idx);
-      lv_obj_add_event_cb(ctrl, analog_out_slider_cb, LV_EVENT_VALUE_CHANGED,
-                          (void*)context_idx);
-    } else if (cap.type == "analogInput") {
-      ctrl = lv_bar_create(row);
-      lv_obj_set_size(ctrl, 60, 6);
-      lv_bar_set_range(ctrl, 0, 4095);
-      lv_bar_set_value(ctrl, cap.value, LV_ANIM_OFF);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_track()), LV_PART_MAIN);
-      lv_obj_set_style_bg_color(ctrl, lv_color_hex(th_muted()),
-                                LV_PART_INDICATOR);
-    } else if (cap.type == "digitalInput") {
-      ctrl = lv_obj_create(row);
-      lv_obj_set_size(ctrl, 12, 12);
-      lv_obj_set_style_radius(ctrl, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-      lv_obj_set_style_border_width(ctrl, 0, LV_PART_MAIN);
-      lv_obj_set_style_bg_color(
-          ctrl, cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track()),
-          LV_PART_MAIN);
+    const String& t = cap.type;
+    if (t == "digitalOutput" || t == "relay") {
+      build_tile(cap, ci, 0, T_SWITCH, cap.name, cap.symbol, 0, 1, online);
+    } else if (t == "analogOutput") {
+      build_tile(cap, ci, 0, T_SLIDER, cap.name, cap.symbol, 0, 255, online);
+    } else if (t == "analogInput") {
+      build_tile(cap, ci, 0, T_GAUGE, cap.name, cap.symbol, 0, 4095, online);
+    } else if (t == "digitalInput" || t == "ld2410") {
+      build_tile(cap, ci, 0, T_BOOL, cap.name, cap.symbol, 0, 1, online);
+    } else if (t == "dht") {
+      // "TempHum" + "Temperature" would only repeat itself: add the module's name only when it adds something
+      String lname = cap.name;
+      lname.toLowerCase();
+      String base = (cap.name == "dht" || lname.indexOf("temp") >= 0 || lname.indexOf("hum") >= 0) ? String("") : cap.name + " ";
+      build_tile(cap, ci, 0, T_GAUGE, base + "Temperature", cap.symbol.isEmpty() ? String("thermometer") : cap.symbol, -10, 50, online);
+      build_tile(cap, ci, 1, T_GAUGE, base + "Humidity", "droplet", 0, 100, online);
+    } else if (t == "ds3231" || t == "neopixel") {
+      build_tile(cap, ci, 0, T_TEXT, cap.name, cap.symbol, 0, 1, online);
     }
-
-    else if (cap.type == "dht" || cap.type == "ld2410" || cap.type == "ds3231" ||
-             cap.type == "neopixel" || cap.type == "buzzer") {
-      // Sensors and effects: show the hub's short state text ("23.4°C  61%", "Comet"…)
-      ctrl = lv_label_create(row);
-      lv_label_set_text(ctrl, cap.display.isEmpty() ? "--" : cap.display.c_str());
-      lv_obj_set_style_text_font(ctrl, &lv_font_montserrat_10, LV_PART_MAIN);
-      lv_obj_set_style_text_color(ctrl, lv_color_hex(th_accent()), LV_PART_MAIN);
-    }
-
-    cap_widgets.push_back({ctrl, cap.pin, cap.type});
+  }
+  if (tiles.empty()) {
+    lv_obj_t* l = lv_label_create(nodes_main_panel);
+    lv_label_set_text(l, "Nothing to monitor or\ncontrol on this node.");
+    lv_obj_set_style_text_color(l, lv_color_hex(th_muted()), LV_PART_MAIN);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, LV_PART_MAIN);
   }
   rendered_node = node_idx;
 }
 
-// Update capability widget values in-place (no destroy/recreate, no flicker)
+// Update the tiles' values in place (no destroy/recreate, no flicker)
 static void update_capability_values(size_t node_idx) {
   if (!dashboard_active || !nodes_main_panel) return;
   if (node_idx >= discovered_nodes.size()) return;
@@ -548,55 +795,13 @@ static void update_capability_values(size_t node_idx) {
     populate_capability_controls(node_idx);
     return;
   }
-
   DeviceNode& node = discovered_nodes[node_idx];
   bool online = is_node_online(node_idx);
-  // Update title with online status
-  for (size_t i = 0; i < cap_widgets.size() && i < node.capabilities.size();
-       i++) {
-    auto& w = cap_widgets[i];
-    auto& cap = node.capabilities[i];
-    if (!w.control) continue;
-
-    if (w.type == "digitalOutput") {
-      // Update checked state
-      if (cap.value > 0 && !lv_obj_has_state(w.control, LV_STATE_CHECKED)) {
-        lv_obj_add_state(w.control, LV_STATE_CHECKED);
-      } else if (cap.value == 0 &&
-                 lv_obj_has_state(w.control, LV_STATE_CHECKED)) {
-        lv_obj_clear_state(w.control, LV_STATE_CHECKED);
-      }
-      // Update disabled state
-      if (online && lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
-        lv_obj_clear_state(w.control, LV_STATE_DISABLED);
-      } else if (!online && !lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
-        lv_obj_add_state(w.control, LV_STATE_DISABLED);
-      }
-    } else if (w.type == "analogOutput") {
-      int cur = lv_slider_get_value(w.control);
-      if (cur != cap.value) {
-        lv_slider_set_value(w.control, cap.value, LV_ANIM_OFF);
-      }
-      // Update disabled state
-      if (online && lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
-        lv_obj_clear_state(w.control, LV_STATE_DISABLED);
-      } else if (!online && !lv_obj_has_state(w.control, LV_STATE_DISABLED)) {
-        lv_obj_add_state(w.control, LV_STATE_DISABLED);
-      }
-    } else if (w.type == "analogInput") {
-      int cur = lv_bar_get_value(w.control);
-      if (cur != cap.value) {
-        lv_bar_set_value(w.control, cap.value, LV_ANIM_OFF);
-      }
-    } else if (w.type == "dht" || w.type == "ld2410" || w.type == "ds3231" ||
-               w.type == "neopixel" || w.type == "buzzer") {
-      const char* t = cap.display.isEmpty() ? "--" : cap.display.c_str();
-      if (strcmp(lv_label_get_text(w.control), t) != 0) lv_label_set_text(w.control, t);
-    } else if (w.type == "digitalInput") {
-      lv_color_t c =
-          cap.value > 0 ? lv_color_hex(th_accent()) : lv_color_hex(th_track());
-      lv_obj_set_style_bg_color(w.control, c, LV_PART_MAIN);
-    }
+  for (auto& t : tiles) {
+    if (t.cap < 0 || (size_t)t.cap >= node.capabilities.size()) continue;
+    // don't fight the user's finger while a slider is being dragged
+    if (t.kind == T_SLIDER && lv_obj_has_state(t.ctrl, LV_STATE_PRESSED)) continue;
+    update_tile(t, node.capabilities[t.cap], online);
   }
 }
 
@@ -636,6 +841,7 @@ static void digital_out_toggle_cb(lv_event_t* e) {
   bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
   size_t ci = (size_t)lv_event_get_user_data(e);
   send_cmd_with_hub_sync(active_node_index, ci, is_on ? 255 : 0);
+  update_capability_values(active_node_index);  // show the new state now, not at the next poll
 }
 
 static void analog_out_slider_cb(lv_event_t* e) {
@@ -645,6 +851,7 @@ static void analog_out_slider_cb(lv_event_t* e) {
   if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
     // Final value: make sure the node and the hub both have it.
     send_cmd_with_hub_sync(active_node_index, ci, value, true);
+    update_capability_values(active_node_index);
     return;
   }
   // While dragging, throttle the radio and skip the hub entirely.
@@ -667,7 +874,7 @@ static void sync_nodes_from_data_manager() {
     dn.deviceId = src->deviceId;
     dn.deviceIdNum = src->deviceIdNum;
     for (const auto& cap : src->capabilities) {
-      dn.capabilities.push_back({cap.name, cap.type, cap.pin, cap.value, cap.display});
+      dn.capabilities.push_back({cap.name, cap.type, cap.pin, cap.value, cap.display, cap.symbol});
     }
     discovered_nodes.push_back(dn);
   }

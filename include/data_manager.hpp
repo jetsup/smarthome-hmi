@@ -9,6 +9,7 @@ struct Capability {
     int pin;
     int value;
     String display;   // short state text for sensors / patterns (from the hub)
+    String symbol;    // icon chosen for the module in the app / website ("" = default for its type)
 };
 
 struct NodeInfo {

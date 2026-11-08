@@ -29,6 +29,8 @@ public:
 
     int httpGet(const String& path, String& response) const;
     int httpPost(const String& path, const String& body, String& response) const;
+    // GET a (binary) response straight into a file on the flash storage. True when it arrived whole.
+    bool httpGetToFile(const String& path, const char* fsPath, size_t expectedBytes) const;
 
     // Fire-and-forget POST executed on a background task so the UI thread
     // (LVGL) never blocks on network I/O. Returns false if the queue is full.
