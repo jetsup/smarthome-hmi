@@ -42,6 +42,7 @@ Re-flashing does **not** erase saved Wi-Fi or pairing (they live in NVS/Wi-Fi st
 2. Once online it asks the hub for a pairing code and shows a **6-digit code and QR**.
 3. In the app (Menu → **Pair a display**, scan the QR) or the web UI (Displays → type the code) claim it and choose its gateway; then pick which nodes it shows. A node can be on only one display.
 4. Appearance (theme, background colour, accent, brightness, RGB LED pattern) is changed under the display's **Appearance** page; the display applies it within about 5 seconds.
+5. Power saving: on the display open **Settings -> Display** (or the display's Appearance page in the app/website) to set the screen brightness, how long without a touch before the screen goes dark (Never ... 30 min), the RGB LED brightness, and whether the RGB LED switches off with the screen. The first touch only wakes the screen. Changes made on the display are saved on the hub, so the app and website show the same values.
 
 Removing the display from **Displays** in the app/web UI unpairs it at once; it then asks for a new code.
 

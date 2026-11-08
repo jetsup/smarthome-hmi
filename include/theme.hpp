@@ -13,6 +13,8 @@ struct Theme {
   int32_t ledColor = -1;    // onboard RGB colour, -1 = follow the accent
   uint8_t ledBrightness = 40;  // 1-100 %
   uint8_t ledSpeed = 50;       // 1-100
+  uint16_t sleepAfter = 0;     // seconds without touch before the screen goes off, 0 = never
+  bool ledSleepOff = true;     // switch the RGB LED off while the screen is off
 };
 
 // The whole appearance block as received from the hub.
@@ -26,6 +28,8 @@ struct ThemeUpdate {
   int32_t ledColor;
   uint8_t ledBrightness;
   uint8_t ledSpeed;
+  uint16_t sleepAfter;
+  bool ledSleepOff;
 };
 
 namespace theme {
@@ -35,6 +39,15 @@ const Theme& get();
 bool update(const ThemeUpdate& u);
 void loadSaved();  // at boot, before any screen is built
 void applyHardware();  // backlight + status LED
+
+// Power saving: the screen (and optionally the RGB LED) switch off after a while
+// without touch; the first touch wakes them and is not passed on to the UI.
+bool asleep();
+void wake();
+void tickPower();  // call from loop()
+// Change the power settings from the display's own Settings screen. `save` stores
+// them and tells the hub (so the app and website agree); otherwise it is a live preview.
+void setDisplay(uint8_t brightness, uint8_t ledBrightness, uint16_t sleepAfter, bool ledSleepOff, bool save);
 }  // namespace theme
 
 // Palette (dark / light, or derived from a custom background colour)

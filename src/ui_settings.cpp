@@ -3,6 +3,7 @@
 
 #include "config.hpp"
 #include "preferences_manager.hpp"
+#include "ui_display_screen.hpp"
 #include "ui_gateway_scan.hpp"
 #include "ui_managers.hpp"
 #include "ui_screens.hpp"
@@ -18,6 +19,7 @@ enum SettingsAction {
   ACTION_GATEWAY = 2,
   ACTION_SYSTEM = 3,
   ACTION_ABOUT = 4,
+  ACTION_DISPLAY = 5,
 };
 
 void build_settings_screen() {
@@ -71,12 +73,13 @@ void build_settings_screen() {
 
   SettingsEntry entries[] = {
       {LV_SYMBOL_WIFI, "Wi-Fi Settings", ACTION_WIFI},
+      {LV_SYMBOL_IMAGE, "Display", ACTION_DISPLAY},
       {LV_SYMBOL_DRIVE, "Change Gateway", ACTION_GATEWAY},
       {LV_SYMBOL_SETTINGS, "System", ACTION_SYSTEM},
       {LV_SYMBOL_REFRESH, "About", ACTION_ABOUT},
   };
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 5; i++) {
     lv_obj_t* item = lv_button_create(panel);
     lv_obj_set_width(item, LV_PCT(100));
     lv_obj_set_height(item, 36);
@@ -135,6 +138,9 @@ static void settings_item_cb(lv_event_t* e) {
       break;
     case ACTION_GATEWAY:
       build_pair_method_screen(true);
+      break;
+    case ACTION_DISPLAY:
+      build_display_screen();
       break;
     case ACTION_SYSTEM:
       build_system_screen();

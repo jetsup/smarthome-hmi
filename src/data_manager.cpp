@@ -89,6 +89,8 @@ bool DataManager::refreshGatewayName() {
     u.ledColor = lcs.length() == 6 ? (int32_t)strtoul(lcs.c_str(), nullptr, 16) : -1;
     u.ledBrightness = ap["ledBrightness"] | 40;
     u.ledSpeed = ap["ledSpeed"] | 50;
+    u.sleepAfter = ap["sleepAfter"] | 0;
+    u.ledSleepOff = ap["ledSleepOff"] | true;
     if (theme::update(u))
       m_lookChanged = true;
   }

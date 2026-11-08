@@ -35,7 +35,13 @@ void my_touchpad_read(lv_indev_t* indev_driver, lv_indev_data_t* data) {
     last_log = millis();
     Serial.printf("[TOUCH] x=%u y=%u\n", x, y);
   }
-  if (!touched) {
+  static bool swallow = false;  // the touch that woke the screen is not a button press
+  if (touched && theme::asleep()) {
+    theme::wake();
+    swallow = true;
+  }
+  if (!touched) swallow = false;
+  if (!touched || swallow) {
     data->state = LV_INDEV_STATE_RELEASED;
   } else {
     data->state = LV_INDEV_STATE_PRESSED;
@@ -101,6 +107,7 @@ void loop() {
   WifiProvisioner::instance().update();
   GatewayDiscovery::instance().update();
   lv_timer_handler();
+  theme::tickPower();
   delay(5);
   ws2812fx.service();
 }
